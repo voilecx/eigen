@@ -18,7 +18,7 @@ val paperRepos = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, commands, paper)
+  .aggregate(core, config, commands, paper)
   .settings(
     name := "eigen",
     publish / skip := true,
@@ -36,6 +36,13 @@ lazy val core = (project in file("core"))
     ),
   )
 
+// Declarative configuration reads: typed keys with defaults and validation. No platform code.
+lazy val config = (project in file("config"))
+  .settings(
+    name := "eigen-config",
+    libraryDependencies += "org.scalameta" %% "munit" % munitVersion % Test,
+  )
+
 // A small Scala 3 DSL over Paper's Brigadier command API.
 lazy val commands = (project in file("commands"))
   .settings(
@@ -46,7 +53,7 @@ lazy val commands = (project in file("commands"))
 
 // Paper/Folia adapter: packet listeners, transport, collection, commands.
 lazy val paper = (project in file("paper"))
-  .dependsOn(core, commands)
+  .dependsOn(core, commands, config)
   .settings(
     name := "eigen-paper",
     resolvers ++= paperRepos,

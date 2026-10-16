@@ -48,6 +48,8 @@ sbt shutdown && EIGEN_WRITE_FIXTURES=1 sbt core/testFull
 - `core` — platform-independent model: feature schema, per-player simulation, lag
   compensation, tick history, windows and the wire codec. It must never depend on Bukkit,
   Paper or PacketEvents, so it can be tested in isolation and reused offline.
+- `config` — a small declarative DSL for typed configuration reads: each key has a type, a
+  default and a check, and a section is a `for` comprehension over its keys. No platform code.
 - `commands` — a small Scala DSL over Paper's Brigadier command API.
 - `paper` — the adapter: packet listeners, transport, dataset collection, commands, wiring.
 - `docs` — the protocol specification and its byte-level fixtures.

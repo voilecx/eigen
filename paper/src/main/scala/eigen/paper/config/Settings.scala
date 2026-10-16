@@ -19,9 +19,9 @@ import java.net.URI
 import java.security.SecureRandom
 import java.util.HexFormat
 
-import org.bukkit.configuration.file.FileConfiguration
 import org.bukkit.plugin.java.JavaPlugin
 
+import eigen.config.Read
 import eigen.core.sim.SimConfig
 
 enum CollectSink:
@@ -41,81 +41,118 @@ final case class Settings(
     alertThreshold: Double,
 )
 
+/**
+ * The plugin's configuration. Every key is declared once in [[Settings.schema]] with its type,
+ * default and check; the bundled `config.yml` documents the same keys and must read back to the
+ * same defaults (see the settings test).
+ */
 object Settings:
 
+  private val defaults = SimConfig()
+  private val DefaultEndpoint = URI.create("wss://eigen.example.com/v1/stream")
   private val LoopbackHosts = Set("localhost", "127.0.0.1", "[::1]", "::1")
+  private val SaltHexDigits = 64
 
-  /** Reads `config.yml`, writing defaults and a fresh privacy salt on first start. */
+  /** Reads `config.yml` from the plugin, writing defaults and a fresh privacy salt on first start. */
   def load(plugin: JavaPlugin): Either[String, Settings] =
     plugin.saveDefaultConfig()
     plugin.reloadConfig()
-    val c = plugin.getConfig
-    ensureSalt(plugin, c)
+    ensureSalt(plugin)
+    schema.from(BukkitSource(plugin.getConfig))
+
+  private val backendSchema: Read[BackendSettings] =
     for
-      url <- parseUri(c.getString("backend.url", ""))
-      sink <- parseSink(c.getString("collect.sink", "server"))
-      targets <- parseTargets(c.getString("detection.targets", "players"))
-      sim <- simConfig(c, targets)
-    yield Settings(
-      backend = BackendSettings(
-        enabled = c.getBoolean("backend.enabled", false),
-        url = url,
-        token = c.getString("backend.token", "").trim,
-        resendBufferBytes = math.max(1L, c.getLong("backend.resend-buffer-mb", 64)) * 1024 * 1024,
-      ),
-      salt = HexFormat.of().parseHex(c.getString("privacy.salt")),
-      sink = sink,
-      sim = sim,
-      exemptBedrock = c.getBoolean("detection.exempt-bedrock", true),
-      alertThreshold = c.getDouble("alerts.threshold", 0.9),
-    )
+      enabled <- Read.bool("enabled", default = false)
+      url <- Read.key("url", DefaultEndpoint)(endpoint)
+      token <- Read.text("token", "").map(_.trim)
+      resendMb <- Read.int("resend-buffer-mb", default = 64, min = 1)
+    yield BackendSettings(enabled, url, token, resendMb.toLong * 1024 * 1024)
 
-  private def ensureSalt(plugin: JavaPlugin, c: FileConfiguration): Unit =
-    val salt = c.getString("privacy.salt", "")
-    if salt == null || salt.length < 32 then
-      val bytes = new Array[Byte](32)
-      SecureRandom().nextBytes(bytes)
-      c.set("privacy.salt", HexFormat.of().formatHex(bytes))
-      plugin.saveConfig()
+  private val sinkSchema: Read[CollectSink] =
+    Read.choice("sink", "server")("server" -> CollectSink.Server, "local" -> CollectSink.Local, "both" -> CollectSink.Both)
 
-  private def parseUri(s: String): Either[String, URI] =
-    try
-      val uri = URI(s)
-      val loopback = uri.getHost != null && LoopbackHosts.contains(uri.getHost)
-      uri.getScheme match
-        case "wss" => Right(uri)
-        // Plaintext is for local development only; a token must not cross the network in clear.
-        case "ws" if loopback => Right(uri)
-        case "ws" => Left("backend.url uses plaintext ws:// for a non-loopback host; use wss://")
-        case _ => Left(s"backend.url must be ws:// or wss://, got '$s'")
-    catch case e: IllegalArgumentException => Left(s"backend.url is not a URI: ${e.getMessage}")
+  private final case class Detection(sim: SimConfig, exemptBedrock: Boolean)
 
-  private def parseSink(s: String): Either[String, CollectSink] = s.toLowerCase match
-    case "server" => Right(CollectSink.Server)
-    case "local" => Right(CollectSink.Local)
-    case "both" => Right(CollectSink.Both)
-    case other => Left(s"collect.sink must be server, local or both, got '$other'")
-
-  private def parseTargets(s: String): Either[String, Boolean] = s.toLowerCase match
-    case "players" => Right(false)
-    case "living" => Right(true)
-    case other => Left(s"detection.targets must be players or living, got '$other'")
-
-  private def simConfig(c: FileConfiguration, living: Boolean): Either[String, SimConfig] =
-    try
-      Right(
+  private val detectionSchema: Read[Detection] =
+    for
+      living <- Read.choice("targets", "players")("players" -> false, "living" -> true)
+      gate <- Read.section("gate"):
+        for
+          combat <- Read.int("combat-ticks", defaults.combatTicks, min = 1)
+          buffer <- Read.int("buffer-ticks", defaults.bufferTicks, min = 0)
+        yield (combat, buffer)
+      windows <- Read.section("windows"):
+        for
+          attackPre <- Read.int("attack-pre", defaults.attackPre, min = 0)
+          attackPost <- Read.int("attack-post", defaults.attackPost, min = 1)
+          attackGap <- Read.int("attack-min-gap", defaults.attackMinGap, min = 0)
+          enginePre <- Read.int("engage-pre", defaults.engagePre, min = 0)
+          enginePost <- Read.int("engage-post", defaults.engagePost, min = 1)
+        yield (attackPre, attackPost, attackGap, enginePre, enginePost)
+      calm <- Read.section("calm"):
+        for
+          minTicks <- Read.int("min-ticks", defaults.calmMinTicks, min = 1)
+          maxTicks <- Read.int("max-ticks", defaults.calmMaxTicks, min = 1)
+          _ <- Read.ensure(maxTicks >= minTicks, "max-ticks", "must be at least min-ticks")
+          minActive <- Read.double("min-active", defaults.calmMinActive.toDouble)
+        yield (minTicks, maxTicks, minActive.toFloat)
+      exempt <- Read.bool("exempt-bedrock", default = true)
+    yield
+      val (combat, buffer) = gate
+      val (attackPre, attackPost, attackGap, enginePre, enginePost) = windows
+      val (minTicks, maxTicks, minActive) = calm
+      Detection(
         SimConfig(
           targetLiving = living,
-          combatTicks = c.getInt("detection.gate.combat-ticks", 40),
-          bufferTicks = c.getInt("detection.gate.buffer-ticks", 60),
-          attackPre = c.getInt("detection.windows.attack-pre", 28),
-          attackPost = c.getInt("detection.windows.attack-post", 12),
-          attackMinGap = c.getInt("detection.windows.attack-min-gap", 12),
-          engagePre = c.getInt("detection.windows.engage-pre", 12),
-          engagePost = c.getInt("detection.windows.engage-post", 28),
-          calmMinTicks = c.getInt("detection.calm.min-ticks", 100),
-          calmMaxTicks = c.getInt("detection.calm.max-ticks", 1200),
-          calmMinActive = c.getDouble("detection.calm.min-active", 0.25).toFloat,
+          combatTicks = combat,
+          bufferTicks = buffer,
+          attackPre = attackPre,
+          attackPost = attackPost,
+          attackMinGap = attackGap,
+          engagePre = enginePre,
+          engagePost = enginePost,
+          calmMinTicks = minTicks,
+          calmMaxTicks = maxTicks,
+          calmMinActive = minActive,
         ),
+        exempt,
       )
-    catch case e: IllegalArgumentException => Left(s"detection: ${e.getMessage}")
+
+  /** The whole configuration, assembled after its parts so their initialisation order is safe. */
+  val schema: Read[Settings] =
+    for
+      backend <- Read.section("backend")(backendSchema)
+      salt <- Read.section("privacy")(Read.key("salt", Array.empty[Byte])(hexSalt))
+      sink <- Read.section("collect")(sinkSchema)
+      detection <- Read.section("detection")(detectionSchema)
+      threshold <- Read.section("alerts")(Read.double("threshold", 0.9))
+    yield Settings(backend, salt, sink, detection.sim, detection.exemptBedrock, threshold)
+
+  /** A backend endpoint: `wss://` anywhere, `ws://` only for loopback development. */
+  private def endpoint(raw: Any): Either[String, URI] = raw match
+    case text: String =>
+      try
+        val uri = URI(text)
+        val loopback = uri.getHost != null && LoopbackHosts.contains(uri.getHost)
+        uri.getScheme match
+          case "wss" => Right(uri)
+          case "ws" if loopback => Right(uri)
+          case "ws" => Left("plaintext ws:// is allowed only for loopback hosts; use wss://")
+          case _ => Left(s"must be ws:// or wss://, got '$text'")
+      catch case e: IllegalArgumentException => Left(s"not a URI: ${e.getMessage}")
+    case other => Left(s"must be text, got ${other.getClass.getSimpleName}")
+
+  /** The privacy salt, hex-encoded. The plugin writes one on first start. */
+  private def hexSalt(raw: Any): Either[String, Array[Byte]] = raw match
+    case text: String if text.length >= SaltHexDigits && text.forall(Character.digit(_, 16) >= 0) =>
+      Right(HexFormat.of.parseHex(text))
+    case _ => Left(s"must be at least $SaltHexDigits hex digits; delete it to generate a new one")
+
+  private def ensureSalt(plugin: JavaPlugin): Unit =
+    val config = plugin.getConfig
+    val salt = config.getString("privacy.salt", "")
+    if salt == null || salt.length < SaltHexDigits then
+      val bytes = new Array[Byte](SaltHexDigits / 2)
+      SecureRandom().nextBytes(bytes)
+      config.set("privacy.salt", HexFormat.of().formatHex(bytes))
+      plugin.saveConfig()
