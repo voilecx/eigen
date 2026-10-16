@@ -24,7 +24,9 @@ package eigen.paper.net
 
 import scala.jdk.CollectionConverters.*
 
+import com.github.retrooper.packetevents.PacketEvents
 import com.github.retrooper.packetevents.event.{PacketListenerAbstract, PacketListenerPriority, PacketSendEvent}
+import com.github.retrooper.packetevents.manager.server.ServerVersion
 import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
 import com.github.retrooper.packetevents.protocol.entity.`type`.{EntityType, EntityTypes}
 import com.github.retrooper.packetevents.protocol.item.ItemStack
@@ -155,6 +157,8 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
 
   private def destroy(p: EigenPlayer, ids: Array[Int]): Unit =
     val t = p.clock.lastSent
+    // Transaction bookkeeping is touched only from the sending thread.
+    ids.foreach(p.forgetEntity)
     p.clock.at(t): () =>
       ids.foreach: id =>
         val e = p.sim.entity(id)
@@ -163,7 +167,6 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
       ids.foreach: id =>
         p.sim.removeEntity(id)
         p.entityMeta.remove(id)
-        p.forgetEntity(id)
 
   private def move(p: EigenPlayer, id: Int, relative: Boolean, hasPos: Boolean, x: Double, y: Double, z: Double): Unit =
     if id == p.sim.selfId then return
@@ -179,12 +182,14 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     val id = w.getEntityId
     val self = id == p.sim.selfId
     val data = w.getEntityMetadata.asScala.toSeq
+    // Metadata is encoded by the server, so its indices follow the server version.
+    val livingIndex = livingFlagsIndex(PacketEvents.getAPI.getServerManager.getVersion)
     p.clock.at(p.clock.lastSent): () =>
       data.foreach: d =>
         (d.getIndex, d.getValue) match
           case (0, flags: java.lang.Byte) if self =>
             p.sim.onSelfFlags(gliding = (flags & 0x80) != 0, swimming = (flags & 0x10) != 0)
-          case (LivingFlagsIndex, flags: java.lang.Byte) if self =>
+          case (i, flags: java.lang.Byte) if self && i == livingIndex =>
             p.sim.onSelfLivingFlags(riptide = (flags & 0x04) != 0)
           case (_, pose: EntityPose) if !self =>
             val meta = p.entityMeta.getOrNull(id)
@@ -226,5 +231,10 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
 
 object Outbound:
   private inline val DeathStatus = 3
-  /** Index of the living-entity flags byte in entity metadata (1.17+). */
-  private inline val LivingFlagsIndex = 8
+
+  /** Index of the living-entity flags byte in entity metadata, for a given server version. */
+  def livingFlagsIndex(server: ServerVersion): Int =
+    if server.isNewerThanOrEquals(ServerVersion.V_1_17) then 8
+    else if server.isNewerThanOrEquals(ServerVersion.V_1_14) then 7
+    else if server.isNewerThanOrEquals(ServerVersion.V_1_10) then 6
+    else 5

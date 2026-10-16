@@ -29,7 +29,9 @@ final class CalmTrack(minRows: Int, maxRows: Int, minActive: Float):
 
   private val layout = Schema.Calm
   private val cols: Array[Array[Float]] = Array.fill(layout.cols.length)(new Array[Float](maxRows))
-  private val activeCol = layout.cols.indexOf(Schema.MaskRot)
+  // A tick counts as active when the mouse actually moved, not merely when rotation is unmasked.
+  private val yawCol = layout.cols.indexOf(Schema.DotsYaw)
+  private val pitchCol = layout.cols.indexOf(Schema.DotsPitch)
 
   private var rows = 0
   private var active = 0
@@ -56,7 +58,7 @@ final class CalmTrack(minRows: Int, maxRows: Int, minActive: Float):
     while i < cols.length do
       cols(i)(rows) = history(layout.cols(i), seq)
       i += 1
-    if cols(activeCol)(rows) != 0f then active += 1
+    if cols(yawCol)(rows) != 0f || cols(pitchCol)(rows) != 0f then active += 1
     rows += 1
     lastSeq = seq
     if closed != null then closed

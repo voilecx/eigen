@@ -43,6 +43,8 @@ final case class Settings(
 
 object Settings:
 
+  private val LoopbackHosts = Set("localhost", "127.0.0.1", "[::1]", "::1")
+
   /** Reads `config.yml`, writing defaults and a fresh privacy salt on first start. */
   def load(plugin: JavaPlugin): Either[String, Settings] =
     plugin.saveDefaultConfig()
@@ -79,8 +81,13 @@ object Settings:
   private def parseUri(s: String): Either[String, URI] =
     try
       val uri = URI(s)
-      if uri.getScheme == "wss" || uri.getScheme == "ws" then Right(uri)
-      else Left(s"backend.url must be ws:// or wss://, got '$s'")
+      val loopback = uri.getHost != null && LoopbackHosts.contains(uri.getHost)
+      uri.getScheme match
+        case "wss" => Right(uri)
+        // Plaintext is for local development only; a token must not cross the network in clear.
+        case "ws" if loopback => Right(uri)
+        case "ws" => Left("backend.url uses plaintext ws:// for a non-loopback host; use wss://")
+        case _ => Left(s"backend.url must be ws:// or wss://, got '$s'")
     catch case e: IllegalArgumentException => Left(s"backend.url is not a URI: ${e.getMessage}")
 
   private def parseSink(s: String): Either[String, CollectSink] = s.toLowerCase match

@@ -23,12 +23,14 @@ import com.github.retrooper.packetevents.protocol.player.{DiggingAction, Interac
 import com.github.retrooper.packetevents.wrapper.configuration.client.WrapperConfigClientPluginMessage
 import com.github.retrooper.packetevents.wrapper.play.client.*
 
+import eigen.paper.collect.Collector
+
 /**
  * Client → server packets. Runs on the connection's network thread at the lowest priority, so
  * it sees every packet the client sent even if another plugin later cancels it. Only our own
  * transaction answers are cancelled.
  */
-final class Inbound(players: Players) extends PacketListenerAbstract(PacketListenerPriority.LOWEST):
+final class Inbound(players: Players, collector: Collector) extends PacketListenerAbstract(PacketListenerPriority.LOWEST):
   import PacketType.Play.Client as C
 
   override def onUserLogin(event: UserLoginEvent): Unit =
@@ -38,6 +40,8 @@ final class Inbound(players: Players) extends PacketListenerAbstract(PacketListe
       players.announce(p, if bukkit != null then bukkit.getName else event.getUser.getName)
 
   override def onUserDisconnect(event: UserDisconnectEvent): Unit =
+    // Finish any recording while the player is still tracked; the disconnect removes it.
+    collector.onQuit(event.getUser.getUUID)
     val _ = players.disconnect(event.getUser)
 
   override def onPacketReceive(event: PacketReceiveEvent): Unit =

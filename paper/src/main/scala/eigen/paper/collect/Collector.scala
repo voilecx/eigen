@@ -23,6 +23,7 @@ import scala.jdk.CollectionConverters.*
 
 import org.bukkit.entity.Player
 
+import eigen.core.sim.WindowSystem
 import eigen.core.wire.Messages
 import eigen.paper.config.Settings
 import eigen.paper.net.Players
@@ -65,18 +66,27 @@ final class Collector(settings: Settings, players: Players, stream: StreamClient
         p.post(() => p.session = s)
         Right(s)
 
-  def stop(target: UUID): Either[String, CollectSession] =
+  def stop(target: UUID): Either[String, CollectSession] = finish(target, direct = false)
+
+  /**
+   * Ends a recording. Normally this runs on the player's network thread, after its last window;
+   * when the plugin is stopping or the player is leaving, it runs on the calling thread instead,
+   * because no further packets (and so no mailbox drains) will come.
+   */
+  private def finish(target: UUID, direct: Boolean): Either[String, CollectSession] =
     val s = sessions.remove(target)
     if s == null then Left("No recording in progress for that player.")
     else
       val stoppedAt = System.currentTimeMillis()
-      val finish: Runnable = () =>
+      val p = players.get(target)
+      val close: Runnable = () =>
+        if p != null then
+          // Flush while the session is still attached, so the last calm segment is recorded.
+          WindowSystem.flushCalm(p.sim)
+          p.session = null
         if settings.sink.server then stream.sessionStopped(Messages.CollectStop(s.id, stoppedAt))
         if settings.sink.local then local.stop(s, stoppedAt)
-      val p = players.get(target)
-      // Detach on the network thread first, so the stop is ordered after the session's last window.
-      if p != null then p.post(() => { p.session = null; p.sim.calm.flush(); finish.run() })
-      else finish.run()
+      if p == null || direct then close.run() else p.post(close)
       Right(s)
 
   /** Marks a segment boundary at the player's current client tick (e.g. a cheat toggled). */
@@ -93,7 +103,7 @@ final class Collector(settings: Settings, players: Players, stream: StreamClient
       Right(s)
 
   /** Stops every recording; used when the plugin disables. */
-  def stopAll(): Unit = sessions.keys().asScala.toSeq.foreach(u => { val _ = stop(u) })
+  def stopAll(): Unit = sessions.keys().asScala.toSeq.foreach(u => { val _ = finish(u, direct = true) })
 
-  /** A player left: finish their recording. */
-  def onQuit(uuid: UUID): Unit = { val _ = stop(uuid) }
+  /** A player left: finish their recording now, while the player is still tracked. */
+  def onQuit(uuid: UUID): Unit = { val _ = finish(uuid, direct = true) }

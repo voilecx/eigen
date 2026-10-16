@@ -38,7 +38,8 @@ final class TickHistory(val capacity: Int):
   private var next: Long = 0
 
   inline def nextSeq: Long = next
-  def oldestSeq: Long = math.max(0L, next - capacity)
+  // The slot of the row being built still holds the oldest row, so only capacity-1 rows are resident.
+  def oldestSeq: Long = math.max(0L, next - capacity + 1)
 
   /** Writes `value` into column `col` of the row being built. */
   inline def update(col: Col, value: Float): Unit = cols(col.index)((next & mask).toInt) = value

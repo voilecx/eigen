@@ -80,6 +80,7 @@ final class StreamClient(settings: BackendSettings, plugin: String, platform: St
   private var maxFrameBytes = 4 * 1024 * 1024
   private var backoffMs = MinBackoffMs
   private var reconnectAt = 0L
+  private var handshakeDeadline = 0L
 
   @volatile private var unackedNow = 0
   @volatile private var stateNow: StreamState = if settings.enabled then StreamState.Disconnected else StreamState.Disabled
@@ -102,11 +103,14 @@ final class StreamClient(settings: BackendSettings, plugin: String, platform: St
 
   def stop(): Unit =
     exec.execute: () =>
+      // Send what is queued (e.g. the final CollectStop) before closing, if the stream is up.
+      frameInbox()
+      if stateNow == StreamState.Ready then transmit()
       val s = socket
       if s != null then s.sendClose(WebSocket.NORMAL_CLOSURE, "shutdown")
       socket = null
     exec.shutdown()
-    exec.awaitTermination(5, TimeUnit.SECONDS)
+    exec.awaitTermination(15, TimeUnit.SECONDS)
 
   // ---- producer API, any thread ----
 
@@ -144,6 +148,8 @@ final class StreamClient(settings: BackendSettings, plugin: String, platform: St
   private def pump(): Unit =
     frameInbox()
     if unackedBytes > settings.resendBufferBytes then resetStream("resend buffer overflow")
+    if stateNow == StreamState.Handshaking && System.currentTimeMillis() >= handshakeDeadline then
+      disconnected("no WELCOME from backend")
     stateNow match
       case StreamState.Ready => transmit()
       case StreamState.Disconnected if System.currentTimeMillis() >= reconnectAt => connect()
@@ -215,6 +221,7 @@ final class StreamClient(settings: BackendSettings, plugin: String, platform: St
           else
             socket = ws
             stateNow = StreamState.Handshaking
+            handshakeDeadline = System.currentTimeMillis() + HandshakeTimeoutMs
             val _ = send(ws, codec.encode(MessageType.Hello, 0, Messages.hello(streamId, plugin, platform)))
 
   private def onMessage(bytes: Array[Byte]): Unit =
@@ -315,6 +322,7 @@ final class StreamClient(settings: BackendSettings, plugin: String, platform: St
 
 object StreamClient:
   private inline val PumpMs = 50L
+  private inline val HandshakeTimeoutMs = 10_000L
   private inline val SendTimeoutSec = 10L
   private inline val MinBackoffMs = 1000L
   private inline val MaxBackoffMs = 300_000L

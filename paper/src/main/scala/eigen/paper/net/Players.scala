@@ -50,7 +50,7 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink):
 
   /** Creates the player's state when its connection enters the game. */
   def connect(user: User): EigenPlayer =
-    byUser.computeIfAbsent(
+    val p = byUser.computeIfAbsent(
       user,
       u =>
         val p = EigenPlayer(u, u.getUUID, handles.incrementAndGet(), Profiles.of(u.getClientVersion), settings.sim, route)
@@ -61,6 +61,9 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink):
         byHandle.put(p.handle, p)
         p,
     )
+    // The name is known now; announcing here (not only on the login event) makes it reliable.
+    announce(p, user.getName)
+    p
 
   /** Announces the player to the backend once its name and brand are known. */
   def announce(p: EigenPlayer, name: String): Unit =
