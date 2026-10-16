@@ -1,0 +1,19 @@
+# sbt
+target/
+project/target/
+project/project/
+.bsp/
+
+# IDE
+.idea/
+.metals/
+.bloop/
+.vscode/
+*.iml
+metals.sbt
+
+# Local test server
+run/
+
+# OS
+.DS_Store
