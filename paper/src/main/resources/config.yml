@@ -1,0 +1,44 @@
+# Eigen configuration.
+
+backend:
+  # Stream data to the Eigen backend. Required for inference and for server-side collection.
+  enabled: false
+  url: "wss://eigen.example.com/v1/stream"
+  # Issued by the backend operator. Never share it; it identifies this server.
+  token: ""
+  # Bytes of unacknowledged data kept for resending after a reconnect.
+  resend-buffer-mb: 64
+
+privacy:
+  # Secret used to pseudonymise player ids before they leave this server. Generated on first
+  # start. Changing it makes the same player look like a new one to the backend.
+  salt: ""
+
+collect:
+  # Where collected sessions go: server, local or both. Local sessions are written to
+  # plugins/Eigen/collect/ in the same format the backend stores.
+  sink: server
+
+detection:
+  # Targets that open combat: players, or living (players and mobs).
+  targets: players
+  gate:
+    radius: 8.0
+    fov: 75.0
+    buffer-ticks: 60
+  windows:
+    attack-pre: 28
+    attack-post: 12
+    attack-min-gap: 12
+    engage-pre: 12
+    engage-post: 28
+  calm:
+    min-ticks: 100
+    max-ticks: 1200
+    min-active: 0.25
+  # Players connecting through Geyser/Floodgate play with touch or a controller.
+  exempt-bedrock: true
+
+alerts:
+  # Minimum score of a non-legit label for a staff alert.
+  threshold: 0.9
