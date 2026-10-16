@@ -99,24 +99,18 @@ object Geometry:
    * into `hit(0..2)` and returns the distance; returns -1 on a miss. Slab method.
    */
   def rayHit(ex: Double, ey: Double, ez: Double, look: Look3, reach: Double, b: Box, hit: Array[Double]): Double =
-    var tMin = 0.0
-    var tMax = reach
-    inline def slab(o: Double, d: Double, lo: Double, hi: Double): Boolean =
-      if math.abs(d) < 1e-12 then o >= lo && o <= hi
-      else
-        val t1 = (lo - o) / d
-        val t2 = (hi - o) / d
-        tMin = math.max(tMin, math.min(t1, t2))
-        tMax = math.min(tMax, math.max(t1, t2))
-        tMin <= tMax
-    if slab(ex, look.x, b.minX, b.maxX) && slab(ey, look.y, b.minY, b.maxY) && slab(ez, look.z, b.minZ, b.maxZ) then
-      hit(0) = ex + look.x * tMin
-      hit(1) = ey + look.y * tMin
-      hit(2) = ez + look.z * tMin
-      tMin
-    else -1.0
+    val t = rayEntry(ex, ey, ez, look, reach, b)
+    if t >= 0 then
+      hit(0) = ex + look.x * t
+      hit(1) = ey + look.y * t
+      hit(2) = ez + look.z * t
+    t
 
   def rayHits(ex: Double, ey: Double, ez: Double, look: Look3, reach: Double, b: Box): Boolean =
+    rayEntry(ex, ey, ez, look, reach, b) >= 0
+
+  /** Entry distance of the ray into `b` within `reach`, or -1 on a miss. Slab method, no allocation. */
+  private def rayEntry(ex: Double, ey: Double, ez: Double, look: Look3, reach: Double, b: Box): Double =
     var tMin = 0.0
     var tMax = reach
     // Inline so the slab bounds stay locals instead of captured, heap-boxed vars.
@@ -128,7 +122,8 @@ object Geometry:
         tMin = math.max(tMin, math.min(t1, t2))
         tMax = math.min(tMax, math.max(t1, t2))
         tMin <= tMax
-    slab(ex, look.x, b.minX, b.maxX) && slab(ey, look.y, b.minY, b.maxY) && slab(ez, look.z, b.minZ, b.maxZ)
+    if slab(ex, look.x, b.minX, b.maxX) && slab(ey, look.y, b.minY, b.maxY) && slab(ez, look.z, b.minZ, b.maxZ) then tMin
+    else -1.0
 
   /** Closest approach between the ray segment and the box, sampled along the segment. */
   def missDistance(ex: Double, ey: Double, ez: Double, look: Look3, reach: Double, b: Box): Double =

@@ -30,9 +30,10 @@ import com.github.retrooper.packetevents.manager.server.ServerVersion
 import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
 import com.github.retrooper.packetevents.protocol.entity.`type`.{EntityType, EntityTypes}
 import com.github.retrooper.packetevents.protocol.item.ItemStack
-import com.github.retrooper.packetevents.protocol.packettype.PacketType
+import com.github.retrooper.packetevents.protocol.packettype.{PacketType, PacketTypeCommon}
 import com.github.retrooper.packetevents.protocol.player.ClientVersion
 import com.github.retrooper.packetevents.protocol.teleport.RelativeFlag
+import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.wrapper.play.server.*
 
 import eigen.core.entity.TrackedEntity
@@ -43,8 +44,6 @@ import eigen.core.sim.{ItemKind, PendingRotation, PendingTeleport}
  * is scheduled as a task that runs when the client acknowledges it, so the simulation always
  * reflects what the client has actually received. Runs at monitor priority and skips packets
  * another plugin cancelled, since those never reach the client.
- *
- * Bracketing scheme derived from GrimAC and Shard (GPL-3.0).
  */
 final class Outbound(players: Players) extends PacketListenerAbstract(PacketListenerPriority.MONITOR):
   import Outbound.*
@@ -56,101 +55,109 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     if tpe == PacketType.Login.Server.LOGIN_SUCCESS then
       val user = event.getUser
       event.getTasksAfterSend.add(() => { val _ = players.connect(user) })
-      return
-    val p = players.get(event.getUser)
-    if p == null then return
+    else
+      val p = players.get(event.getUser)
+      if p != null then route(p, event, tpe)
 
-    if tpe == S.PING then p.clock.onPingSent(WrapperPlayServerPing(event).getId)
-    else if tpe == S.SPAWN_ENTITY then
+  private def route(p: EigenPlayer, event: PacketSendEvent, tpe: PacketTypeCommon): Unit = tpe match
+    case S.PING => p.clock.onPingSent(WrapperPlayServerPing(event).getId)
+    case S.SPAWN_ENTITY =>
       val w = WrapperPlayServerSpawnEntity(event)
-      spawn(p, w.getEntityId, w.getEntityType, w.getPosition.getX, w.getPosition.getY, w.getPosition.getZ)
-    else if tpe == S.SPAWN_LIVING_ENTITY then
+      spawn(p, w.getEntityId, w.getEntityType, w.getPosition)
+    case S.SPAWN_LIVING_ENTITY =>
       val w = WrapperPlayServerSpawnLivingEntity(event)
-      spawn(p, w.getEntityId, w.getEntityType, w.getPosition.getX, w.getPosition.getY, w.getPosition.getZ)
-    else if tpe == S.SPAWN_PLAYER then
+      spawn(p, w.getEntityId, w.getEntityType, w.getPosition)
+    case S.SPAWN_PLAYER =>
       val w = WrapperPlayServerSpawnPlayer(event)
-      spawn(p, w.getEntityId, EntityTypes.PLAYER, w.getPosition.getX, w.getPosition.getY, w.getPosition.getZ)
-    else if tpe == S.DESTROY_ENTITIES then destroy(p, WrapperPlayServerDestroyEntities(event).getEntityIds)
-    else if tpe == S.ENTITY_RELATIVE_MOVE then
+      spawn(p, w.getEntityId, EntityTypes.PLAYER, w.getPosition)
+    case S.DESTROY_ENTITIES => destroy(p, WrapperPlayServerDestroyEntities(event).getEntityIds)
+    case S.ENTITY_RELATIVE_MOVE =>
       val w = WrapperPlayServerEntityRelativeMove(event)
       move(p, w.getEntityId, relative = true, hasPos = true, w.getDeltaX, w.getDeltaY, w.getDeltaZ)
-    else if tpe == S.ENTITY_RELATIVE_MOVE_AND_ROTATION then
+    case S.ENTITY_RELATIVE_MOVE_AND_ROTATION =>
       val w = WrapperPlayServerEntityRelativeMoveAndRotation(event)
       move(p, w.getEntityId, relative = true, hasPos = true, w.getDeltaX, w.getDeltaY, w.getDeltaZ)
-    else if tpe == S.ENTITY_TELEPORT then
+    case S.ENTITY_TELEPORT =>
       val w = WrapperPlayServerEntityTeleport(event)
-      val pos = w.getValues.getPosition
-      move(p, w.getEntityId, relative = false, hasPos = true, pos.getX, pos.getY, pos.getZ)
-    else if tpe == S.ENTITY_POSITION_SYNC then
+      absolute(p, w.getEntityId, w.getValues.getPosition)
+    case S.ENTITY_POSITION_SYNC =>
       val w = WrapperPlayServerEntityPositionSync(event)
-      val pos = w.getValues.getPosition
-      move(p, w.getId, relative = false, hasPos = true, pos.getX, pos.getY, pos.getZ)
-    else if tpe == S.ENTITY_ROTATION then move(p, WrapperPlayServerEntityRotation(event).getEntityId, relative = true, hasPos = false, 0, 0, 0)
-    else if tpe == S.ENTITY_STATUS then
-      val w = WrapperPlayServerEntityStatus(event)
-      if w.getStatus == DeathStatus then
-        val id = w.getEntityId
-        p.clock.at(p.bracket(event))(() => { val e = p.sim.entity(id); if e != null then e.dead = true })
-    else if tpe == S.ENTITY_METADATA then metadata(p, WrapperPlayServerEntityMetadata(event))
-    else if tpe == S.UPDATE_ATTRIBUTES then attributes(p, event, WrapperPlayServerUpdateAttributes(event))
-    else if tpe == S.ENTITY_VELOCITY then
-      if WrapperPlayServerEntityVelocity(event).getEntityId == p.sim.selfId then p.clock.at(p.bracket(event))(() => p.sim.onKnockback())
-    else if tpe == S.EXPLOSION then
+      absolute(p, w.getId, w.getValues.getPosition)
+    case S.ENTITY_ROTATION =>
+      move(p, WrapperPlayServerEntityRotation(event).getEntityId, relative = true, hasPos = false, 0, 0, 0)
+    case S.ENTITY_STATUS => deathStatus(p, event, WrapperPlayServerEntityStatus(event))
+    case S.ENTITY_METADATA => metadata(p, WrapperPlayServerEntityMetadata(event))
+    case S.UPDATE_ATTRIBUTES => attributes(p, event, WrapperPlayServerUpdateAttributes(event))
+    case S.ENTITY_VELOCITY =>
+      if WrapperPlayServerEntityVelocity(event).getEntityId == p.sim.selfId then knockback(p, event)
+    case S.EXPLOSION =>
       val motion = WrapperPlayServerExplosion(event).getKnockback
-      if motion != null && (motion.getX != 0 || motion.getY != 0 || motion.getZ != 0) then
-        p.clock.at(p.bracket(event))(() => p.sim.onKnockback())
-    else if tpe == S.PLAYER_POSITION_AND_LOOK then
-      val w = WrapperPlayServerPlayerPositionAndLook(event)
-      val f = w.getRelativeFlags
-      val teleport = PendingTeleport(
-        w.getX, w.getY, w.getZ, w.getYaw, w.getPitch,
-        f.has(RelativeFlag.X), f.has(RelativeFlag.Y), f.has(RelativeFlag.Z), f.has(RelativeFlag.YAW), f.has(RelativeFlag.PITCH),
-      )
-      p.clock.at(p.bracket(event))(() => p.sim.expectTeleport(teleport))
-    else if tpe == S.PLAYER_ROTATION then
-      val w = WrapperPlayServerPlayerRotation(event)
-      val pitch = if w.isRelativePitch then w.getPitch else math.max(-90f, math.min(90f, w.getPitch % 360f))
-      val rotation = PendingRotation(w.getYaw, pitch, w.isRelativeYaw, w.isRelativePitch)
-      p.sendTransaction()
-      p.clock.at(p.clock.lastSent)(() => p.sim.expectRotation(rotation))
-    else if tpe == S.JOIN_GAME then
-      val w = WrapperPlayServerJoinGame(event)
-      val self = w.getEntityId
-      p.clock.at(p.clock.lastSent)(() => { p.sim.breakEpoch(); p.sim.selfId = self; p.entityMeta.clear() })
-      event.getTasksAfterSend.add(() => p.sendTransaction())
-    else if tpe == S.RESPAWN then
+      if motion != null && (motion.getX != 0 || motion.getY != 0 || motion.getZ != 0) then knockback(p, event)
+    case S.PLAYER_POSITION_AND_LOOK => teleport(p, event, WrapperPlayServerPlayerPositionAndLook(event))
+    case S.PLAYER_ROTATION => serverRotation(p, WrapperPlayServerPlayerRotation(event))
+    case S.JOIN_GAME => joinGame(p, event, WrapperPlayServerJoinGame(event).getEntityId)
+    case S.RESPAWN =>
       p.clock.at(p.bracket(event))(() => { p.sim.breakEpoch(); p.entityMeta.clear() })
-    else if tpe == S.SET_PASSENGERS then
+    case S.SET_PASSENGERS =>
       val w = WrapperPlayServerSetPassengers(event)
       val vehicle = w.getEntityId
       val riding = w.getPassengers.contains(p.sim.selfId)
       p.clock.at(p.bracket(event))(() => vehicleChange(p, vehicle, riding))
-    else if tpe == S.OPEN_WINDOW then p.clock.at(p.clock.lastSent)(() => p.sim.onGui(true))
-    else if tpe == S.CLOSE_WINDOW then p.clock.at(p.clock.lastSent)(() => p.sim.onGui(false))
-    else if tpe == S.HELD_ITEM_CHANGE then
+    case S.OPEN_WINDOW => p.clock.at(p.clock.lastSent)(() => p.sim.onGui(true))
+    case S.CLOSE_WINDOW => p.clock.at(p.clock.lastSent)(() => p.sim.onGui(false))
+    case S.HELD_ITEM_CHANGE =>
       val slot = WrapperPlayServerHeldItemChange(event).getSlot
       p.clock.at(p.clock.lastSent)(() => p.sim.onSlot(slot))
-    else if tpe == S.SET_SLOT then
+    case S.SET_SLOT =>
       val w = WrapperPlayServerSetSlot(event)
       if w.getWindowId == 0 then inventorySlot(p, w.getSlot, w.getItem)
-    else if tpe == S.WINDOW_ITEMS then
+    case S.WINDOW_ITEMS =>
       val w = WrapperPlayServerWindowItems(event)
       if w.getWindowId == 0 then
         val items = w.getItems.asScala.toIndexedSeq
-        for i <- 36 to 45 if i < items.size do inventorySlot(p, i, items(i))
-    else if tpe == S.SET_PLAYER_INVENTORY then
+        for slot <- FirstHotbarSlot to OffhandSlot if slot < items.size do inventorySlot(p, slot, items(slot))
+    case S.SET_PLAYER_INVENTORY =>
       val w = WrapperPlayServerSetPlayerInventory(event)
       // Player inventory indices: 0..8 hotbar, 40 offhand.
       val slot = w.getSlot
-      if slot >= 0 && slot < 9 then inventorySlot(p, 36 + slot, w.getStack)
-      else if slot == 40 then inventorySlot(p, 45, w.getStack)
+      if slot >= 0 && slot < 9 then inventorySlot(p, FirstHotbarSlot + slot, w.getStack)
+      else if slot == PlayerOffhandIndex then inventorySlot(p, OffhandSlot, w.getStack)
+    case _ => ()
 
-  private def spawn(p: EigenPlayer, id: Int, tpe: EntityType, x: Double, y: Double, z: Double): Unit =
+  private def deathStatus(p: EigenPlayer, event: PacketSendEvent, w: WrapperPlayServerEntityStatus): Unit =
+    if w.getStatus == DeathStatus then
+      val id = w.getEntityId
+      p.clock.at(p.bracket(event)): () =>
+        val e = p.sim.entity(id)
+        if e != null then e.dead = true
+
+  private def knockback(p: EigenPlayer, event: PacketSendEvent): Unit =
+    p.clock.at(p.bracket(event))(() => p.sim.onKnockback())
+
+  private def teleport(p: EigenPlayer, event: PacketSendEvent, w: WrapperPlayServerPlayerPositionAndLook): Unit =
+    val f = w.getRelativeFlags
+    val pending = PendingTeleport(
+      w.getX, w.getY, w.getZ, w.getYaw, w.getPitch,
+      f.has(RelativeFlag.X), f.has(RelativeFlag.Y), f.has(RelativeFlag.Z), f.has(RelativeFlag.YAW), f.has(RelativeFlag.PITCH),
+    )
+    p.clock.at(p.bracket(event))(() => p.sim.expectTeleport(pending))
+
+  private def serverRotation(p: EigenPlayer, w: WrapperPlayServerPlayerRotation): Unit =
+    val pitch = if w.isRelativePitch then w.getPitch else math.max(-90f, math.min(90f, w.getPitch % 360f))
+    val rotation = PendingRotation(w.getYaw, pitch, w.isRelativeYaw, w.isRelativePitch)
+    p.sendTransaction()
+    p.clock.at(p.clock.lastSent)(() => p.sim.expectRotation(rotation))
+
+  private def joinGame(p: EigenPlayer, event: PacketSendEvent, self: Int): Unit =
+    p.clock.at(p.clock.lastSent)(() => { p.sim.breakEpoch(); p.sim.selfId = self; p.entityMeta.clear() })
+    event.getTasksAfterSend.add(() => p.sendTransaction())
+
+  private def spawn(p: EigenPlayer, id: Int, tpe: EntityType, pos: Vector3d): Unit =
     if id < 0 then return
     p.forgetEntity(id)
     val modernBoats = p.user.getClientVersion.isNewerThanOrEquals(ClientVersion.V_1_21_2)
     val e = TrackedEntity(id, EntityCatalog.kind(tpe), EntityCatalog.steps(tpe, modernBoats), p.profile)
-    e.spawnAt(x, y, z)
+    e.spawnAt(pos.getX, pos.getY, pos.getZ)
     val meta = EntityMeta(tpe)
     EntityCatalog.resize(e, tpe, p.profile, crouching = false, lowPose = false, scale = 1f)
     p.clock.at(p.clock.lastSent)(() => { p.entityMeta(id) = meta; p.sim.addEntity(e) })
@@ -167,6 +174,9 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
       ids.foreach: id =>
         p.sim.removeEntity(id)
         p.entityMeta.remove(id)
+
+  private def absolute(p: EigenPlayer, id: Int, pos: Vector3d): Unit =
+    move(p, id, relative = false, hasPos = true, pos.getX, pos.getY, pos.getZ)
 
   private def move(p: EigenPlayer, id: Int, relative: Boolean, hasPos: Boolean, x: Double, y: Double, z: Double): Unit =
     if id == p.sim.selfId then return
@@ -222,15 +232,21 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     if riding then p.sim.onVehicle(true)
     else if p.sim.body.inVehicle && p.sim.entity(vehicle) != null then p.sim.onVehicle(false)
 
-  /** Window-0 slot indices: 36..44 hotbar, 45 offhand. */
+  /** Stores an item in the simulation's inventory mirror; `slot` is a window-0 slot index. */
   private def inventorySlot(p: EigenPlayer, slot: Int, item: ItemStack): Unit =
     val kind = if item == null || item.isEmpty then ItemKind.Empty else ItemKind.of(item.getType.getName.toString)
     p.clock.at(p.clock.lastSent): () =>
-      if slot >= 36 && slot <= 44 then p.sim.inventory.hotbar(slot - 36) = kind
-      else if slot == 45 then p.sim.inventory.offhand = kind
+      if slot >= FirstHotbarSlot && slot < OffhandSlot then p.sim.inventory.hotbar(slot - FirstHotbarSlot) = kind
+      else if slot == OffhandSlot then p.sim.inventory.offhand = kind
 
 object Outbound:
   private inline val DeathStatus = 3
+  /** Window-0 slot of the first hotbar slot; the hotbar spans nine slots. */
+  private inline val FirstHotbarSlot = 36
+  /** Window-0 offhand slot. */
+  private inline val OffhandSlot = 45
+  /** Player-inventory index of the offhand, as used by `SET_PLAYER_INVENTORY`. */
+  private inline val PlayerOffhandIndex = 40
 
   /** Index of the living-entity flags byte in entity metadata, for a given server version. */
   def livingFlagsIndex(server: ServerVersion): Int =

@@ -233,27 +233,8 @@ object RecordSystem extends TickSystem:
     // Idle: no mouse, keys or clicks for a while.
     if r.rotated || k.any || cl.swing || cl.use || cl.attack then cond.idleRun = 0 else cond.idleRun += 1
 
-    var reasons = 0
-    if s.tick <= cond.teleportUntil then reasons |= Reason.Teleport
-    if r.forced then reasons |= Reason.ServerRotation
-    if !RotationSystem.calibrated(r) then reasons |= Reason.Uncalibrated
-    if cond.guiOpen then reasons |= Reason.Gui
-    if b.inVehicle then reasons |= Reason.Vehicle
-    if b.gliding then reasons |= Reason.Gliding
-    if b.riptide then reasons |= Reason.Riptide
-    if s.tick <= cond.knockbackUntil then reasons |= Reason.Knockback
-    if cond.idleRun >= s.config.idleTicks then reasons |= Reason.Idle
-    if c.target == null then reasons |= Reason.NoTarget
-    else if c.inflation > s.config.maxInflation then reasons |= Reason.Uncertain
-    if b.swimming || b.inWater then reasons |= Reason.Water
-    if !s.profile.realInput then reasons |= Reason.LegacyInput
-    if r.discontinuity then reasons |= Reason.Discontinuity
-
-    var activity = 0
-    if k.any then activity |= ActivityBit.Moving
-    if s.tick - cl.lastDigTick <= 10 then activity |= ActivityBit.Mining
-    if s.tick - cl.lastPlaceTick <= 10 then activity |= ActivityBit.Building
-    if r.rotated then activity |= ActivityBit.Rotating
+    val reasons = reasonsOf(s)
+    val activity = activityOf(s)
 
     val attackOnTarget = cl.attack && c.target != null && cl.attackTarget == c.target.nn.id
 
@@ -301,6 +282,41 @@ object RecordSystem extends TickSystem:
     h(PingBucket) = s.pingBucket.toFloat
 
     h.commit(s.tick, s.epoch)
+
+  /** Why this tick's streams are masked, as a set of `Reason` bits. */
+  private def reasonsOf(s: PlayerSim): Int =
+    val r = s.rotation
+    val b = s.body
+    val cond = s.conditions
+    val c = s.combat
+    var reasons = 0
+    if s.tick <= cond.teleportUntil then reasons |= Reason.Teleport
+    if r.forced then reasons |= Reason.ServerRotation
+    if !RotationSystem.calibrated(r) then reasons |= Reason.Uncalibrated
+    if cond.guiOpen then reasons |= Reason.Gui
+    if b.inVehicle then reasons |= Reason.Vehicle
+    if b.gliding then reasons |= Reason.Gliding
+    if b.riptide then reasons |= Reason.Riptide
+    if s.tick <= cond.knockbackUntil then reasons |= Reason.Knockback
+    if cond.idleRun >= s.config.idleTicks then reasons |= Reason.Idle
+    if c.target == null then reasons |= Reason.NoTarget
+    else if c.inflation > s.config.maxInflation then reasons |= Reason.Uncertain
+    if b.swimming || b.inWater then reasons |= Reason.Water
+    if !s.profile.realInput then reasons |= Reason.LegacyInput
+    if r.discontinuity then reasons |= Reason.Discontinuity
+    reasons
+
+  /** What the player was doing this tick, as a set of `ActivityBit` bits. */
+  private def activityOf(s: PlayerSim): Int =
+    val cl = s.clicks
+    var activity = 0
+    if s.keys.any then activity |= ActivityBit.Moving
+    if s.tick - cl.lastDigTick <= RecentTicks then activity |= ActivityBit.Mining
+    if s.tick - cl.lastPlaceTick <= RecentTicks then activity |= ActivityBit.Building
+    if s.rotation.rotated then activity |= ActivityBit.Rotating
+    activity
+
+  private inline val RecentTicks = 10
 
 /** A window waiting for its post-anchor rows. */
 final class PendingCut:

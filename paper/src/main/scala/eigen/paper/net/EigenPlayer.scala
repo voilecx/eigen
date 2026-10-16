@@ -71,7 +71,7 @@ final class EigenPlayer(
   @volatile var announced = false
 
   // Send-path state: the last transaction each entity's movement was bracketed with.
-  private val lastHung = IntMap[Array[Int]](64)
+  private val lastMove = IntMap[LastMove](64)
 
   private val mailbox = ConcurrentLinkedQueue[Runnable]()
 
@@ -103,13 +103,15 @@ final class EigenPlayer(
    * transaction, or the second would be applied before the first settled.
    */
   def movementTransaction(entityId: Int): Int =
-    val slot = lastHung.getOrNull(entityId)
-    if slot != null && slot(0) == clock.lastSent then sendTransaction()
+    val last = lastMove.getOrNull(entityId)
+    if last != null && last.transaction == clock.lastSent then sendTransaction()
     val id = clock.lastSent
-    if slot != null then slot(0) = id else lastHung(entityId) = Array(id)
+    if last != null then last.transaction = id else lastMove(entityId) = LastMove(id)
     id
 
-  def forgetEntity(entityId: Int): Unit = lastHung.remove(entityId)
+  def forgetEntity(entityId: Int): Unit = lastMove.remove(entityId)
+
+  private final class LastMove(var transaction: Int)
 
   /** Bucketed transaction round-trip time, for the `ping_bucket` meta column. */
   def pingBucket: Int =

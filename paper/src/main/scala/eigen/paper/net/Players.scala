@@ -50,19 +50,18 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink):
 
   /** Creates the player's state when its connection enters the game. */
   def connect(user: User): EigenPlayer =
-    val p = byUser.computeIfAbsent(
-      user,
-      u =>
-        val p = EigenPlayer(u, u.getUUID, handles.incrementAndGet(), Profiles.of(u.getClientVersion), settings.sim, route)
-        val brand = pendingBrands.remove(u)
-        if brand != null then p.brand = brand
-        p.exempt = settings.exemptBedrock && isBedrock(u.getUUID)
-        byUuid.put(p.uuid, p)
-        byHandle.put(p.handle, p)
-        p,
-    )
+    val p = byUser.computeIfAbsent(user, newPlayer)
     // The name is known now; announcing here (not only on the login event) makes it reliable.
     announce(p, user.getName)
+    p
+
+  private def newPlayer(user: User): EigenPlayer =
+    val p = EigenPlayer(user, user.getUUID, handles.incrementAndGet(), Profiles.of(user.getClientVersion), settings.sim, route)
+    val brand = pendingBrands.remove(user)
+    if brand != null then p.brand = brand
+    p.exempt = settings.exemptBedrock && isBedrock(user.getUUID)
+    byUuid.put(p.uuid, p)
+    byHandle.put(p.handle, p)
     p
 
   /** Announces the player to the backend once its name and brand are known. */
