@@ -109,7 +109,7 @@ final class EigenCommands(players: Players, collector: Collector, stream: Stream
         s"client protocol ${p.profile.protocol}, tick-end ${p.profile.tickEnd}, brand ${p.brand}",
         f"rtt ${p.clock.rtt}%.0f ms, tick ${s.tick}, epoch ${s.epoch}, engagement ${c.engagement}",
         f"mouse step yaw ${r.yawAxis.currentStep}%.5f (${if r.yawAxis.converged then "ok" else "calibrating"}), pitch ${r.pitchAxis.currentStep}%.5f",
-        s"gate ${if c.gate then "combat" else "calm"}, hittable ${c.hittable}, entities ${s.entities.size}",
+        s"gate ${if c.gate then "combat" else "calm"}, entities ${s.entities.size}",
         f"aim ${c.aimYaw}%.2f/${c.aimPitch}%.2f, distance ${c.distance}%.2f, inflation ${c.inflation}%.2f",
         s"recording: ${Option(p.session).map(describe).getOrElse("no")}, exempt ${p.exempt}",
       )

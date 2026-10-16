@@ -124,7 +124,6 @@ final class Conditions:
 /** Melee target selection and the combat gate. */
 final class Combat:
   var target: TrackedEntity | Null = null
-  var hittable = 0
   var gate = false
   var lastCombatTick = Int.MinValue / 2
   /** Increments at every engagement; see protocol §5.3. */

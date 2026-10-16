@@ -23,8 +23,9 @@ detection:
   # Targets that open combat: players, or living (players and mobs).
   targets: players
   gate:
-    radius: 8.0
-    fov: 75.0
+    # Combat starts with a hit and lasts this many ticks after the last one.
+    combat-ticks: 40
+    # Calm ticks closer than this to combat on either side are neither combat nor calm.
     buffer-ticks: 60
   windows:
     attack-pre: 28

@@ -132,31 +132,14 @@ object TargetSystem extends TickSystem:
     val look = r.look
     val union = s.boxA
 
-    // Candidates: hittable when close enough and inside the view cone.
-    var best: TrackedEntity | Null = null
-    var bestAngle = Double.MaxValue
-    var hittable = 0
-    s.entities.foreachValue { e =>
-      if !e.dead && e.id != s.selfId && s.targetable(e.kind) then
-        e.possibleHitbox(union)
-        if union.distanceTo(ex, ey, ez) <= cfg.gateRadius then
-          val angle = Geometry.minAngleToBox(ex, ey, ez, look, union)
-          if angle <= cfg.gateFov then
-            hittable += 1
-            if angle < bestAngle then
-              bestAngle = angle
-              best = e
-    }
-    c.hittable = hittable
-
-    // Stay on the entity the player is hitting while it remains close.
-    val sticky = s.entity(s.clicks.attackTarget)
-    val keep = sticky != null && !sticky.dead && s.targetable(sticky.kind) &&
-      s.tick - s.clicks.lastAttackTick <= cfg.stickyTargetTicks &&
-      sticky.possibleHitbox(union).distanceTo(ex, ey, ez) <= cfg.gateRadius * 1.5
-    val target = if keep then sticky else best
+    // Combat is defined by hits: the attacked entity is the target while the last hit is recent.
+    // Nothing before the first hit of a fight is combat, so pre-hit aim is not modelled.
+    val attacked = s.entity(s.clicks.attackTarget)
+    val recent = s.tick - s.clicks.lastAttackTick <= cfg.combatTicks
+    val target: TrackedEntity | Null =
+      if recent && attacked != null && !attacked.dead && s.targetable(attacked.kind) then attacked else null
     c.target = target
-    c.gate = target != null && (hittable > 0 || s.clicks.attack)
+    c.gate = target != null
 
     if target == null then
       clear(c)

@@ -19,10 +19,8 @@ package eigen.core.sim
 final case class SimConfig(
     /** Also treat non-player living entities as combat targets. */
     targetLiving: Boolean = false,
-    /** A target is hittable within this distance, in blocks, from the eye. */
-    gateRadius: Double = 8.0,
-    /** …and within this angle, in degrees, of the look direction. */
-    gateFov: Double = 75.0,
+    /** Ticks after the last hit that still count as combat. Combat starts only with a hit. */
+    combatTicks: Int = 40,
     /** Ticks around combat that are neither combat nor calm. */
     bufferTicks: Int = 60,
     attackPre: Int = 28,
@@ -40,8 +38,6 @@ final case class SimConfig(
     idleTicks: Int = 20,
     knockbackTicks: Int = 10,
     teleportTicks: Int = 2,
-    /** Ticks a target stays selected after the player last hit it. */
-    stickyTargetTicks: Int = 40,
 ):
   require(attackPre >= 0 && attackPost >= 1 && engagePre >= 0 && engagePost >= 1)
   require(calmMinTicks >= 1 && calmMaxTicks >= calmMinTicks)

@@ -106,8 +106,7 @@ object Settings:
       Right(
         SimConfig(
           targetLiving = living,
-          gateRadius = c.getDouble("detection.gate.radius", 8.0),
-          gateFov = c.getDouble("detection.gate.fov", 75.0),
+          combatTicks = c.getInt("detection.gate.combat-ticks", 40),
           bufferTicks = c.getInt("detection.gate.buffer-ticks", 60),
           attackPre = c.getInt("detection.windows.attack-pre", 28),
           attackPost = c.getInt("detection.windows.attack-post", 12),

@@ -70,7 +70,7 @@ class SimSuite extends munit.FunSuite:
     h.spawnTarget(2, 2.5)
     for _ <- 0 until 30 do h.tick()
     h.tick(attack = 2)
-    for _ <- 0 until cfg.attackPost do h.tick()
+    for _ <- 0 until cfg.engagePost do h.tick()
 
     val attack = h.windows.filter(_.kind == WindowKind.Attack)
     assertEquals(attack.size, 1)
@@ -124,3 +124,26 @@ class SimSuite extends munit.FunSuite:
     assertEquals(ran.toList, List(1))
     assert(clock.onPong(b))
     assertEquals(ran.toList, List(1, 2))
+
+  test("combat needs a hit: a close target without attacks is never combat"):
+    val h = Harness()
+    for _ <- 0 until 150 do h.tick()
+    h.spawnTarget(2, 2.5)
+    for _ <- 0 until 100 do h.tick()
+    val hist = h.sim.history
+    assert((hist.oldestSeq until hist.nextSeq).forall(seq => hist(Schema.Gate, seq) == 0f))
+    assert((hist.oldestSeq until hist.nextSeq).forall(seq => hist(Schema.MaskTgt, seq) == 0f))
+
+  test("combat starts at a hit and lasts combatTicks after the last hit"):
+    val cfg = SimConfig(calmMinTicks = 40, calmMaxTicks = 200)
+    val h = Harness(cfg)
+    for _ <- 0 until 150 do h.tick()
+    h.spawnTarget(2, 2.5)
+    h.tick(attack = 2)
+    val hist = h.sim.history
+    val hit = hist.nextSeq - 1
+    assertEquals(hist(Schema.Gate, hit), 1f)
+    for _ <- 0 until cfg.combatTicks do h.tick()
+    assertEquals(hist(Schema.Gate, hit + cfg.combatTicks), 1f)
+    h.tick()
+    assertEquals(hist(Schema.Gate, hit + cfg.combatTicks + 1), 0f)
