@@ -42,8 +42,8 @@ Recordings go to the backend, to `plugins/Eigen/collect/` or both (`collect.sink
 sbt testFull paper/assembly
 ```
 
-The jar is written to `target/out/jvm/scala-3.9.0/eigen-paper/Eigen-<version>.jar`. It contains
-only Eigen's classes; Paper downloads the Scala runtime and other libraries on first start.
+The jar is written to `target/out/jvm/scala-3.9.0/eigen-paper/Eigen-<version>.jar`. It bundles
+the Scala runtime and all required libraries (except PacketEvents, which is loaded as a plugin).
 
 ## Protocol
 

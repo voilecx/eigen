@@ -62,7 +62,7 @@ lazy val paper = (project in file("paper"))
       "io.papermc.paper" % "paper-api" % paperApiVersion % Provided,
       // Supplied at runtime by the PacketEvents plugin (see `depend` in plugin.yml).
       "com.github.retrooper" % "packetevents-spigot" % packetEventsVersion % Provided,
-      "io.lettuce" % "lettuce-core" % lettuceVersion % Provided,
+      "io.lettuce" % "lettuce-core" % lettuceVersion,
       // Compile-time only: autowire expands to plain constructor calls.
       "com.softwaremill.macwire" %% "macros" % macwireVersion % Provided,
       "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % jsoniterVersion % Provided,
@@ -70,17 +70,22 @@ lazy val paper = (project in file("paper"))
     ),
     Compile / resourceGenerators += Def.task {
       val out = (Compile / resourceManaged).value / "plugin.yml"
-      IO.write(out, pluginYml(version.value, scalaVersion.value))
+      IO.write(out, pluginYml(version.value))
       Seq(out)
     }.taskValue,
-    // Only our own classes go into the jar. Third-party runtime libraries are listed under
-    // `libraries` in plugin.yml and downloaded by Paper's library loader; relocating scala.*
-    // would break the runtime.
-    assembly / assemblyOption ~= (_.withIncludeScala(false).withIncludeDependency(false)),
+    // Bundle Scala and third-party runtime dependencies directly into the plugin jar so server
+    // operators only need PacketEvents installed.
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "versions", _, "module-info.class") => MergeStrategy.discard
+      case PathList("META-INF", "io.netty.versions.properties") => MergeStrategy.first
+      case PathList("META-INF", "INDEX.LIST") => MergeStrategy.discard
+      case "module-info.class" => MergeStrategy.discard
+      case other => (assembly / assemblyMergeStrategy).value(other)
+    },
     assembly / assemblyJarName := s"Eigen-${version.value}.jar",
   )
 
-def pluginYml(version: String, scalaVersion: String): String =
+def pluginYml(version: String): String =
   s"""name: Eigen
      |version: '$version'
      |main: eigen.paper.EigenPlugin
@@ -88,10 +93,6 @@ def pluginYml(version: String, scalaVersion: String): String =
      |api-version: '1.13'
      |folia-supported: true
      |depend: [packetevents]
-     |libraries:
-     |  - org.scala-lang:scala3-library_3:$scalaVersion
-     |  - com.github.plokhotnyuk.jsoniter-scala:jsoniter-scala-core_3:$jsoniterVersion
-     |  - io.lettuce:lettuce-core:$lettuceVersion
      |permissions:
      |  eigen.command:
      |    default: op

@@ -19,9 +19,8 @@ protocol version bumped.
 
 - Scala 3 (LTS line), compiled for Java 25. sbt 2 builds the project.
 - PacketEvents is a runtime plugin dependency (`depend` in `plugin.yml`); it is never shaded.
-- Third-party runtime libraries are not shaded either. They are listed under `libraries` in
-  the generated `plugin.yml` and downloaded by Paper's library loader. The plugin jar contains
-  only this project's classes.
+- Third-party runtime libraries (`scala3-library`, `jsoniter-scala-core`, `lettuce-core`) are
+  bundled into the fat jar by `sbt paper/assembly` so the distributed jar is self-contained.
 - Compile-time-only libraries (macros) are `Provided`: MacWire for wiring the object graph,
   jsoniter-scala macros for JSON codecs.
 
@@ -97,3 +96,6 @@ sbt shutdown && EIGEN_WRITE_FIXTURES=1 sbt core/testFull
 - Make the smallest change that fully solves the task; do not refactor unrelated code.
 - Keep the build warning-free and run `sbt testFull` before finishing.
 - If a requirement is ambiguous or conflicts with these rules, stop and ask.
+
+
+[You have received this identical output 3 times. Re-reading '/Users/delyfss/Desktop/eigen/eigen/AGENTS.md:raw' will not change it — use a narrower selector (path:A-B), or proceed with the edit.]
