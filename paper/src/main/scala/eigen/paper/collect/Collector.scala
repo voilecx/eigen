@@ -26,7 +26,7 @@ import org.bukkit.entity.Player
 import eigen.core.sim.WindowSystem
 import eigen.core.wire.Messages
 import eigen.paper.config.Settings
-import eigen.paper.net.Players
+import eigen.paper.net.{EigenPlayer, Players}
 import eigen.paper.stream.StreamClient
 
 /**
@@ -39,24 +39,37 @@ final class Collector(settings: Settings, players: Players, stream: StreamClient
   private val ids = AtomicInteger(0)
 
   def active: Iterable[CollectSession] = sessions.values().asScala
+  def get(uuid: UUID): CollectSession | Null = sessions.get(uuid)
 
   def start(target: Player, label: Label, tags: Map[String, String], note: String): Either[String, CollectSession] =
-    val p = players.get(target.getUniqueId)
-    if p == null then Left(s"${target.getName} is not tracked yet; try again in a moment.")
+    start(target.getUniqueId, target.getName, label, tags, note, selfService = false)
+
+  def start(
+      targetUuid: UUID,
+      targetName: String,
+      label: Label,
+      tags: Map[String, String],
+      note: String,
+      selfService: Boolean,
+  ): Either[String, CollectSession] =
+    val p = players.get(targetUuid)
+    if p == null then Left(s"$targetName is not tracked yet; try again in a moment.")
+    else if p.exempt then Left(s"$targetName is exempt from collection.")
     else if settings.sink.server && !stream.enabled && !settings.sink.local then Left("The backend is disabled and collect.sink is server.")
     else
       val s = CollectSession(
         id = ids.incrementAndGet(),
         uuid = UUID.randomUUID(),
         handle = p.handle,
-        playerName = target.getName,
+        playerName = targetName,
         player = players.pseudonym(p.uuid),
         label = label,
         tags = tags,
         note = note,
         startedAt = System.currentTimeMillis(),
+        selfService = selfService,
       )
-      if sessions.putIfAbsent(target.getUniqueId, s) != null then Left(s"${target.getName} is already being recorded.")
+      if sessions.putIfAbsent(targetUuid, s) != null then Left(s"$targetName is already being recorded.")
       else
         if settings.sink.server then
           stream.sessionStarted(Messages.CollectStart(s.id, s.uuid.toString, s.handle, label.wire, tags, note, s.startedAt))
@@ -66,7 +79,19 @@ final class Collector(settings: Settings, players: Players, stream: StreamClient
         p.post(() => p.session = s)
         Right(s)
 
+  /** Automatically starts a legit self-service session on join when `collect.auto-legit` is enabled. */
+  def maybeAutoStart(p: EigenPlayer): Unit =
+    if settings.autoLegit && !p.exempt && (settings.sink.local || (settings.sink.server && stream.enabled)) then
+      val _ = start(p.uuid, p.name, Label.Legit, Map("source" -> "auto"), "", selfService = true)
+
   def stop(target: UUID): Either[String, CollectSession] = finish(target, direct = false)
+
+  /** Stops a self-service session started via `/eigen record start` or `collect.auto-legit`. */
+  def stopSelf(target: UUID): Either[String, CollectSession] =
+    val s = sessions.get(target)
+    if s == null then Left("You do not have an active recording.")
+    else if !s.selfService then Left("Your recording was started by staff and cannot be stopped with /eigen record stop.")
+    else finish(target, direct = false)
 
   /**
    * Ends a recording. Normally this runs on the player's network thread, after its last window;

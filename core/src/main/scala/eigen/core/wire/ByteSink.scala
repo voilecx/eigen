@@ -50,6 +50,11 @@ final class ByteSink(initial: Int = 64 * 1024):
     Float32.set(buf, pos, v)
     pos += 4
 
+  def f64(v: Double): Unit =
+    ensure(8)
+    Double64.set(buf, pos, v)
+    pos += 8
+
   def bytes(src: Array[Byte], off: Int, len: Int): Unit =
     ensure(len)
     System.arraycopy(src, off, buf, pos, len)
@@ -65,8 +70,11 @@ object ByteSink:
   private val Short16: VarHandle = MethodHandles.byteArrayViewVarHandle(classOf[Array[Short]], ByteOrder.LITTLE_ENDIAN)
   private val Int32: VarHandle = MethodHandles.byteArrayViewVarHandle(classOf[Array[Int]], ByteOrder.LITTLE_ENDIAN)
   private val Float32: VarHandle = MethodHandles.byteArrayViewVarHandle(classOf[Array[Float]], ByteOrder.LITTLE_ENDIAN)
+  private val Double64: VarHandle = MethodHandles.byteArrayViewVarHandle(classOf[Array[Double]], ByteOrder.LITTLE_ENDIAN)
 
   def readU16(a: Array[Byte], at: Int): Int = (Short16.get(a, at): Short) & 0xffff
   def readI16(a: Array[Byte], at: Int): Int = Short16.get(a, at): Short
   def readU32(a: Array[Byte], at: Int): Long = (Int32.get(a, at): Int) & 0xffffffffL
+  def readI32(a: Array[Byte], at: Int): Int = Int32.get(a, at): Int
   def readF32(a: Array[Byte], at: Int): Float = Float32.get(a, at): Float
+  def readF64(a: Array[Byte], at: Int): Double = Double64.get(a, at): Double

@@ -47,7 +47,7 @@ final class Ctx private[commands] (val raw: CommandContext[CommandSourceStack]):
 /** A node of the command tree under construction. */
 final class Node private[commands] (private[commands] val label: Either[String, Arg[?]]):
   private[commands] val children = ArrayBuffer[Node]()
-  private[commands] var permission: Option[String] = None
+  private[commands] var permissions: Seq[String] = Nil
   private[commands] var executor: Option[Ctx => Unit] = None
   private[commands] var help: String = ""
 
@@ -81,7 +81,9 @@ final class CommandSpec private[commands] (val name: String, val description: St
             complete(ctx.getSource).iterator.filter(_.toLowerCase.startsWith(typed)).foreach(sb.suggest)
             sb.buildFuture()
         b
-    n.permission.foreach(p => builder.requires(src => src.getSender.hasPermission(p)))
+    if n.permissions.nonEmpty then
+      val perms = n.permissions
+      builder.requires(src => perms.exists(src.getSender.hasPermission))
     n.executor.foreach: run =>
       builder.executes: (ctx: CommandContext[CommandSourceStack]) =>
         val c = Ctx(ctx)
@@ -134,7 +136,10 @@ object CommandTree:
     parent.children += n
 
   /** Restricts this node and everything below it to senders with `permission`. */
-  def requires(permission: String)(using n: Node): Unit = n.permission = Some(permission)
+  def requires(permission: String)(using n: Node): Unit = n.permissions = Seq(permission)
+
+  /** Restricts this node and everything below it to senders with any of `permissions`. */
+  def requiresAny(permissions: String*)(using n: Node): Unit = n.permissions = permissions
 
   /** Makes this node runnable. `help` shows up in [[CommandSpec.usage]]. */
   def run(f: Ctx => Unit)(using n: Node): Unit = n.executor = Some(f)

@@ -22,12 +22,16 @@ backend for dataset collection and inference.
 |---|---|---|
 | `/eigen status` | `eigen.command` | Backend connection and collection overview |
 | `/eigen alerts` | `eigen.alerts` | Toggle staff alerts for backend verdicts |
+| `/eigen vl <player>` | `eigen.alerts` | Inspect a player's violation count and latest verdict |
 | `/eigen debug <player>` | `eigen.admin` | Live simulation state of a player |
 | `/eigen exempt <player>` | `eigen.admin` | Stop streaming a player |
 | `/eigen collect start <player> <legit\|cheat\|unknown> [key=value…] [note]` | `eigen.collect` | Record a labelled session |
 | `/eigen collect mark <player> <on\|off> [note]` | `eigen.collect` | Mark a cheat toggle inside a recording |
 | `/eigen collect stop <player>` | `eigen.collect` | Finish a recording |
 | `/eigen collect list` | `eigen.collect` | Recordings in progress |
+| `/eigen record start [note]` | `eigen.record` | Self-record your own gameplay as `legit` |
+| `/eigen record stop` | `eigen.record` | Stop your own self-service recording |
+| `/eigen record status` | `eigen.record` | Check your mouse calibration and recording status |
 
 Recordings go to the backend, to `plugins/Eigen/collect/` or both (`collect.sink` in
 `config.yml`). The local format matches what the backend stores.

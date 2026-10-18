@@ -21,23 +21,33 @@ import org.bukkit.entity.Player
 
 import eigen.commands.{Arg, CommandSpec, Ctx}
 import eigen.commands.CommandTree.*
+import eigen.core.sim.RotationSystem
 import eigen.paper.alert.Alerts
 import eigen.paper.collect.{CollectSession, Collector, Label}
+import eigen.paper.garnet.GarnetBridge
 import eigen.paper.net.Players
 import eigen.paper.stream.StreamClient
 
 /** The `/eigen` command tree. */
-final class EigenCommands(players: Players, collector: Collector, stream: StreamClient, alerts: Alerts):
+final class EigenCommands(
+    players: Players,
+    collector: Collector,
+    stream: StreamClient,
+    alerts: Alerts,
+    garnet: GarnetBridge,
+):
   private val Target = Arg.player("player")
+  private val PlayerName = Arg.word("player")
   private val LabelArg = Arg.oneOf("label", Label.values.map(_.wire).toSeq*)
   private val Details = Arg.text("details")
   private val Toggle = Arg.oneOf("state", "on", "off")
   private val Note = Arg.text("note")
 
   val spec: CommandSpec = command("eigen", "Eigen anti-cheat", "ei"):
-    requires("eigen.command")
+    requiresAny("eigen.command", "eigen.record")
 
     literal("status"):
+      requires("eigen.command")
       run("connection and collection overview")(status)
 
     literal("alerts"):
@@ -46,6 +56,11 @@ final class EigenCommands(players: Players, collector: Collector, stream: Stream
         ctx.raw.getSource.getSender match
           case staff: Player => ctx.reply(if alerts.toggle(staff) then "Alerts on." else "Alerts off.")
           case _ => ctx.fail("Only players receive alerts.")
+
+    literal("vl"):
+      requires("eigen.alerts")
+      arg(PlayerName):
+        run("inspect violation count of a player")(vl)
 
     literal("debug"):
       requires("eigen.admin")
@@ -85,6 +100,17 @@ final class EigenCommands(players: Players, collector: Collector, stream: Stream
           if active.isEmpty then ctx.reply("No recordings in progress.")
           else active.foreach(s => ctx.reply(describe(s)))
 
+    literal("record"):
+      requires("eigen.record")
+      literal("start"):
+        run("record your own gameplay as legit")(ctx => recordStart(ctx, ""))
+        arg(Note):
+          run("…with an optional note")(ctx => recordStart(ctx, ctx(Note)))
+      literal("stop"):
+        run("stop your own legit recording")(recordStop)
+      literal("status"):
+        run("check your calibration and recording progress")(recordStatus)
+
     literal("help"):
       run(ctx => help(ctx))
 
@@ -94,8 +120,44 @@ final class EigenCommands(players: Players, collector: Collector, stream: Stream
     val tracked = players.all.size
     ctx.reply(header("Eigen"))
     ctx.reply(s"Backend: ${stream.state.toString.toLowerCase}${if stream.inference then ", inference on" else ""}")
+    if garnet.enabled then
+      ctx.reply(s"Garnet: ${if garnet.connected then "connected" else "connecting/offline"}")
     ctx.reply(s"Players tracked: $tracked, recordings: ${collector.active.size}")
     if stream.enabled then ctx.reply(s"Queued windows: ${stream.backlog}, dropped: ${stream.dropped}")
+
+  private def vl(ctx: Ctx): Unit =
+    val name = ctx(PlayerName)
+    garnet.queryViolation(name):
+      case Some(st) =>
+        ctx.reply(
+          f"${st.player}: VL x${st.vl} — last ${st.label} ${st.score * 100}%.1f%% (${st.model}) on ${st.server}"
+        )
+      case None =>
+        ctx.reply(s"No violations recorded for $name.")
+
+  private def recordStart(ctx: Ctx, note: String): Unit =
+    val self = senderPlayer(ctx)
+    collector
+      .start(self.getUniqueId, self.getName, Label.Legit, Map("source" -> "self"), note.trim, selfService = true)
+      .fold(ctx.fail, s => ctx.reply(s"Started self-recording (${describe(s)})."))
+
+  private def recordStop(ctx: Ctx): Unit =
+    val self = senderPlayer(ctx)
+    collector.stopSelf(self.getUniqueId).fold(ctx.fail, s => ctx.reply(s"Stopped self-recording (${describe(s)})."))
+
+  private def recordStatus(ctx: Ctx): Unit =
+    val self = senderPlayer(ctx)
+    val p = tracked(ctx, self)
+    p.post: () =>
+      val calibrated = RotationSystem.calibrated(p.sim.rotation)
+      val gate = if p.sim.combat.gate then "combat" else "calm"
+      val rec = Option(p.session).fold("not recording")(s => s"recording (${s.windows.get} windows)")
+      ctx.reply(s"Calibration: ${if calibrated then "ready" else "warming up"}, gate: $gate, status: $rec")
+
+  private def senderPlayer(ctx: Ctx): Player =
+    ctx.raw.getSource.getSender match
+      case player: Player => player
+      case _ => ctx.fail("Only players can use /eigen record.")
 
   private def debug(ctx: Ctx): Unit =
     val p = tracked(ctx, ctx(Target))

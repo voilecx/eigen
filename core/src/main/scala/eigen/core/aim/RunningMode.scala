@@ -22,6 +22,8 @@
 
 package eigen.core.aim
 
+import eigen.core.wire.ByteSink
+
 /**
  * Mode of the last `window` samples, where samples closer than a bucket width count as equal.
  * Flat arrays instead of a map: the number of distinct buckets is small and bounded by `window`.
@@ -60,6 +62,50 @@ final class RunningMode(window: Int):
 
   def clear(): Unit =
     head = 0; filled = 0; buckets = 0
+
+  def writeTo(sink: ByteSink): Unit =
+    sink.u16(filled)
+    sink.u16(buckets)
+    var b = 0
+    while b < buckets do
+      sink.f64(keys(b))
+      sink.u16(counts(b))
+      b += 1
+    var i = 0
+    while i < filled do
+      sink.u8(history((head + i) % window))
+      i += 1
+
+  def readFrom(bytes: Array[Byte], at: Int): Int =
+    if at + 4 > bytes.length then return -1
+    val f = ByteSink.readU16(bytes, at)
+    val bCount = ByteSink.readU16(bytes, at + 2)
+    if f > window || bCount > window || (f == 0) != (bCount == 0) then return -1
+    val end = at + 4 + bCount * 10 + f
+    if end > bytes.length then return -1
+    var pos = at + 4
+    var sum = 0
+    var b = 0
+    while b < bCount do
+      val k = ByteSink.readF64(bytes, pos)
+      val c = ByteSink.readU16(bytes, pos + 8)
+      if !java.lang.Double.isFinite(k) || k <= 0.0 || c <= 0 || c > f then return -1
+      keys(b) = k
+      counts(b) = c
+      sum += c
+      pos += 10
+      b += 1
+    if sum != f then return -1
+    var i = 0
+    while i < f do
+      val idx = bytes(pos + i) & 0xff
+      if idx >= bCount then return -1
+      history(i) = idx
+      i += 1
+    head = 0
+    filled = f
+    buckets = bCount
+    end
 
   private def best: Int =
     var b = -1

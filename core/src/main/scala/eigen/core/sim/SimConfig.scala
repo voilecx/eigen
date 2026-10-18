@@ -20,15 +20,15 @@ final case class SimConfig(
     /** Also treat non-player living entities as combat targets. */
     targetLiving: Boolean = false,
     /** Ticks after the last hit that still count as combat. Combat starts only with a hit. */
-    combatTicks: Int = 40,
+    combatTicks: Int = 60,
     /** Ticks around combat that are neither combat nor calm. */
     bufferTicks: Int = 60,
-    attackPre: Int = 28,
-    attackPost: Int = 12,
+    attackPre: Int = 56,
+    attackPost: Int = 24,
     /** Minimum ticks between two attack anchors. */
-    attackMinGap: Int = 12,
-    engagePre: Int = 12,
-    engagePost: Int = 28,
+    attackMinGap: Int = 20,
+    engagePre: Int = 24,
+    engagePost: Int = 56,
     calmMinTicks: Int = 100,
     calmMaxTicks: Int = 1200,
     /** Fraction of calm ticks that must carry real mouse movement for a segment to be kept. */

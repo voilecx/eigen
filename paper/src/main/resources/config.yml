@@ -18,21 +18,32 @@ collect:
   # Where collected sessions go: server, local or both. Local sessions are written to
   # plugins/Eigen/collect/ in the same format the backend stores.
   sink: server
+  # Automatically start a self-service legit recording for every non-exempt player on join.
+  auto-legit: false
+
+garnet:
+  # Share mouse calibration, calm baselines, alerts and violation counts across servers via Garnet.
+  enabled: false
+  uri: "redis://127.0.0.1:6379"
+  # Logical name of this Paper instance in cross-server alerts.
+  server: "default"
+  # Seconds to retain per-player handoff state and violation counts after disconnect/update.
+  ttl-seconds: 600
 
 detection:
   # Targets that open combat: players, or living (players and mobs).
   targets: players
   gate:
     # Combat starts with a hit and lasts this many ticks after the last one.
-    combat-ticks: 40
+    combat-ticks: 60
     # Calm ticks closer than this to combat on either side are neither combat nor calm.
     buffer-ticks: 60
   windows:
-    attack-pre: 28
-    attack-post: 12
-    attack-min-gap: 12
-    engage-pre: 12
-    engage-post: 28
+    attack-pre: 56
+    attack-post: 24
+    attack-min-gap: 20
+    engage-pre: 24
+    engage-post: 56
   calm:
     min-ticks: 100
     max-ticks: 1200

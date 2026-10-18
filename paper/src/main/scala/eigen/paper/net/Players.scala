@@ -27,21 +27,25 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 import eigen.core.history.Window
+import eigen.core.sim.{Handoff, WindowSystem}
 import eigen.core.wire.Messages
 import eigen.paper.collect.LocalSink
 import eigen.paper.config.Settings
+import eigen.paper.garnet.GarnetBridge
 import eigen.paper.stream.StreamClient
 
 /**
  * Registry of connected players and the router for the windows their simulations produce.
  * Lookups are concurrent; each [[EigenPlayer]] is otherwise owned by its network thread.
  */
-final class Players(settings: Settings, stream: StreamClient, local: LocalSink):
+final class Players(settings: Settings, stream: StreamClient, local: LocalSink, garnet: GarnetBridge):
   private val byUser = ConcurrentHashMap[User, EigenPlayer]()
   private val byUuid = ConcurrentHashMap[UUID, EigenPlayer]()
   private val byHandle = ConcurrentHashMap[Int, EigenPlayer]()
   private val pendingBrands = ConcurrentHashMap[User, String]()
   private val handles = AtomicInteger(0)
+
+  @volatile var onAnnounced: EigenPlayer => Unit = _ => ()
 
   def get(user: User): EigenPlayer | Null = byUser.get(user)
   def get(uuid: UUID): EigenPlayer | Null = byUuid.get(uuid)
@@ -68,13 +72,23 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink):
   def announce(p: EigenPlayer, name: String): Unit =
     p.name = name
     if !p.announced then
-      stream.playerJoined(Messages.PlayerJoin(p.handle, pseudonym(p.uuid), p.profile.protocol, p.brand))
+      val pseudo = pseudonym(p.uuid)
+      stream.playerJoined(Messages.PlayerJoin(p.handle, pseudo, p.profile.protocol, p.brand))
       p.announced = true
+      if !p.exempt && garnet.enabled then
+        garnet.loadHandoff(pseudo): bytes =>
+          p.post(() => { val _ = Handoff.restore(p.sim, bytes) })
+      onAnnounced(p)
 
   def disconnect(user: User): EigenPlayer | Null =
     pendingBrands.remove(user)
     val p = byUser.remove(user)
     if p != null then
+      if !p.exempt then
+        if wantsWindows(p) && p.sim.calm.length >= settings.sim.calmMinTicks then
+          WindowSystem.flushCalm(p.sim)
+        if garnet.enabled then
+          garnet.saveHandoff(pseudonym(p.uuid), Handoff.encode(p.sim))
       byUuid.remove(p.uuid, p)
       byHandle.remove(p.handle, p)
       if p.announced then stream.playerLeft(p.handle)

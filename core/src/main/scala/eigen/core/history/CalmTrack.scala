@@ -16,6 +16,7 @@
 package eigen.core.history
 
 import eigen.core.schema.Schema
+import eigen.core.wire.ByteSink
 
 /**
  * Accumulates one contiguous run of calm (non-combat) ticks in the low-dimensional calm layout.
@@ -48,12 +49,16 @@ final class CalmTrack(minRows: Int, maxRows: Int, minActive: Float):
    * [[flush]] first when the caller knows the run ended.
    */
   def append(history: TickHistory, seq: Long, engagementNow: Int): Window | Null =
-    val continues = rows > 0 && seq == lastSeq + 1 && history.epochAt(seq) == epoch
+    val handedOff = rows > 0 && lastSeq == -1L
+    val continues = rows > 0 && (handedOff || (seq == lastSeq + 1 && history.epochAt(seq) == epoch))
     val closed = if rows > 0 && !continues then flush() else null
     if rows == 0 then
       firstTick = history.tickAt(seq)
       epoch = history.epochAt(seq)
       engagement = engagementNow
+    else if handedOff then
+      firstTick = math.max(0, history.tickAt(seq) - rows)
+      epoch = history.epochAt(seq)
     var i = 0
     while i < cols.length do
       cols(i)(rows) = history(layout.cols(i), seq)
@@ -82,3 +87,49 @@ final class CalmTrack(minRows: Int, maxRows: Int, minActive: Float):
     active = 0
     lastSeq = -1
     out
+
+  def writeTo(sink: ByteSink): Unit =
+    sink.u16(rows)
+    sink.u16(active)
+    sink.u32(engagement.toLong & 0xffffffffL)
+    var c = 0
+    while c < cols.length do
+      var r = 0
+      while r < rows do
+        sink.f32(cols(c)(r))
+        r += 1
+      c += 1
+
+  def readFrom(bytes: Array[Byte], at: Int): Int =
+    if at + 8 > bytes.length then return -1
+    val savedRows = ByteSink.readU16(bytes, at)
+    val savedActive = ByteSink.readU16(bytes, at + 2)
+    val savedEngagement = ByteSink.readI32(bytes, at + 4)
+    if savedRows > 4096 || savedActive > savedRows || savedEngagement < 0 then return -1
+    val end = at + 8 + savedRows * cols.length * 4
+    if end > bytes.length then return -1
+    if rows == 0 && savedRows > 0 then
+      val keep = math.min(savedRows, maxRows)
+      val skip = savedRows - keep
+      var c = 0
+      while c < cols.length do
+        val colOff = at + 8 + (c * savedRows + skip) * 4
+        var r = 0
+        while r < keep do
+          val v = ByteSink.readF32(bytes, colOff + r * 4)
+          if !java.lang.Float.isFinite(v) then return -1
+          cols(c)(r) = v
+          r += 1
+        c += 1
+      var act = 0
+      var r = 0
+      while r < keep do
+        if cols(yawCol)(r) != 0f || cols(pitchCol)(r) != 0f then act += 1
+        r += 1
+      rows = keep
+      active = act
+      engagement = savedEngagement
+      firstTick = 0
+      epoch = 1
+      lastSeq = -1L
+    end

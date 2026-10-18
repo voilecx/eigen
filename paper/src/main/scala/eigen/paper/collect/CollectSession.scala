@@ -38,6 +38,7 @@ final class CollectSession(
     val tags: Map[String, String],
     val note: String,
     val startedAt: Long,
+    val selfService: Boolean = false,
 ):
   val windows = AtomicInteger()
   @volatile var cheatActive: Boolean = label == Label.Cheat

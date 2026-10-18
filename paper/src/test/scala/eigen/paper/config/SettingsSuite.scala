@@ -43,8 +43,12 @@ class SettingsSuite extends munit.FunSuite:
     assertEquals(fromBundled.map(_.backend), fromEmpty.map(_.backend))
     assertEquals(fromBundled.map(_.sim), fromEmpty.map(_.sim))
     assertEquals(fromBundled.map(_.sink), fromEmpty.map(_.sink))
+    assertEquals(fromBundled.map(_.autoLegit), fromEmpty.map(_.autoLegit))
+    assertEquals(fromBundled.map(_.garnet), fromEmpty.map(_.garnet))
     assertEquals(fromBundled.map(_.exemptBedrock), fromEmpty.map(_.exemptBedrock))
     assertEquals(fromBundled.map(_.alertThreshold), fromEmpty.map(_.alertThreshold))
+    assertEquals(fromBundled.map(_.sim.attackPre + fromBundled.toOption.get.sim.attackPost), Right(80))
+    assertEquals(fromBundled.map(_.sim.engagePre + fromBundled.toOption.get.sim.engagePost), Right(80))
 
   test("a remote plaintext endpoint is refused, naming the key"):
     val result = settingsFrom(Map("backend" -> Map("url" -> "ws://eigen.example.com/v1/stream")))
@@ -68,3 +72,14 @@ class SettingsSuite extends munit.FunSuite:
   test("a salt that is too short is rejected with a hint"):
     val result = Settings.schema.from(Source.of(Map("privacy" -> Map("salt" -> "abc"))))
     assertEquals(result.left.toOption, Some("privacy.salt: must be at least 64 hex digits; delete it to generate a new one"))
+
+  test("garnet uri must use redis:// or rediss://"):
+    val bad = settingsFrom(Map("garnet" -> Map("uri" -> "http://127.0.0.1:6379")))
+    assertEquals(bad.left.toOption, Some("garnet.uri: must be redis:// or rediss://, got 'http://127.0.0.1:6379'"))
+    val ok = settingsFrom(Map("garnet" -> Map("enabled" -> true, "uri" -> "rediss://garnet.internal:6379", "server" -> "duels-1")))
+    assert(ok.isRight)
+    assertEquals(ok.map(_.garnet.server), Right("duels-1"))
+
+  test("collect.auto-legit enables automatic legit session recording"):
+    val enabled = settingsFrom(Map("collect" -> Map("auto-legit" -> true)))
+    assertEquals(enabled.map(_.autoLegit), Right(true))

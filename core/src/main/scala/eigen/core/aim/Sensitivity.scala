@@ -22,6 +22,8 @@
 
 package eigen.core.aim
 
+import eigen.core.wire.ByteSink
+
 /**
  * Estimates one axis' rotation step — the angle a single mouse count turns the camera.
  *
@@ -47,6 +49,7 @@ final class AxisEstimator:
 
   def converged: Boolean = stable
   def currentStep: Double = step
+  def sampleCount: Int = modes.size
 
   /**
    * Feeds the rotation of one tick. `ulp` is the float precision of the absolute angle, which
@@ -71,6 +74,45 @@ final class AxisEstimator:
     modes.clear()
     lastAbs = 0; step = 0; stable = false
     recentHead = 0; recentCount = 0; offCount = 0
+
+  def writeTo(sink: ByteSink): Unit =
+    sink.f64(lastAbs)
+    sink.f64(step)
+    sink.u8(if stable then 1 else 0)
+    sink.u8(recentHead)
+    sink.u8(recentCount)
+    sink.u8(offCount)
+    var i = 0
+    while i < DriftWindow do
+      sink.u8(if recentOff(i) then 1 else 0)
+      i += 1
+    modes.writeTo(sink)
+
+  def readFrom(bytes: Array[Byte], at: Int): Int =
+    val headerLen = 20 + DriftWindow
+    if at + headerLen > bytes.length then return -1
+    val lAbs = ByteSink.readF64(bytes, at)
+    val stp = ByteSink.readF64(bytes, at + 8)
+    val st = (bytes(at + 16) & 0xff) != 0
+    val rHead = bytes(at + 17) & 0xff
+    val rCount = bytes(at + 18) & 0xff
+    val oCount = bytes(at + 19) & 0xff
+    if !java.lang.Double.isFinite(lAbs) || lAbs < 0.0 || !java.lang.Double.isFinite(stp) || stp < 0.0 then return -1
+    if st && stp <= MinDivisor then return -1
+    if rHead >= DriftWindow || rCount > DriftWindow || oCount > rCount then return -1
+    val next = modes.readFrom(bytes, at + headerLen)
+    if next < 0 then return -1
+    var i = 0
+    while i < DriftWindow do
+      recentOff(i) = (bytes(at + 20 + i) & 0xff) != 0
+      i += 1
+    lastAbs = lAbs
+    step = stp
+    stable = st
+    recentHead = rHead
+    recentCount = rCount
+    offCount = oCount
+    next
 
   private def trackDrift(abs: Double): Unit =
     val d = abs / step

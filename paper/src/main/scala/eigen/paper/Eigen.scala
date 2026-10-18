@@ -25,6 +25,7 @@ import eigen.paper.alert.Alerts
 import eigen.paper.cmd.EigenCommands
 import eigen.paper.collect.{Collector, LocalSink}
 import eigen.paper.config.Settings
+import eigen.paper.garnet.GarnetBridge
 import eigen.paper.net.{Inbound, Outbound, Players}
 import eigen.paper.stream.StreamClient
 
@@ -36,6 +37,7 @@ final class Eigen(
     plugin: JavaPlugin,
     stream: StreamClient,
     local: LocalSink,
+    garnet: GarnetBridge,
     players: Players,
     collector: Collector,
     alerts: Alerts,
@@ -46,7 +48,9 @@ final class Eigen(
   private var heartbeat: ScheduledTask | Null = null
 
   def start(): Unit =
+    players.onAnnounced = collector.maybeAutoStart
     stream.onVerdict = alerts.onVerdict
+    garnet.start(alerts.onRemoteAlert)
     stream.start()
     val events = PacketEvents.getAPI.getEventManager
     events.registerListener(inbound)
@@ -63,6 +67,7 @@ final class Eigen(
     events.unregisterListener(outbound)
     collector.stopAll()
     stream.stop()
+    garnet.stop()
     local.shutdown()
 
 object Eigen:
@@ -76,4 +81,5 @@ object Eigen:
       plugin.getLogger,
     )
     val local = LocalSink(plugin.getDataFolder.toPath.resolve("collect"), plugin.getLogger)
-    autowire[Eigen](plugin, settings, stream, local)
+    val garnet = GarnetBridge(settings, plugin.getLogger)
+    autowire[Eigen](plugin, settings, stream, local, garnet)

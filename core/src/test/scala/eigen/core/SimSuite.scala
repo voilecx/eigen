@@ -21,7 +21,7 @@ import eigen.core.entity.{ClientProfile, EntityKind, TrackedEntity}
 import eigen.core.history.{Window, WindowKind}
 import eigen.core.latency.TransactionClock
 import eigen.core.schema.Schema
-import eigen.core.sim.{PlayerSim, Reason, SimConfig}
+import eigen.core.sim.{Handoff, PlayerSim, Reason, RotationSystem, SimConfig, WindowSystem}
 
 class SimSuite extends munit.FunSuite:
 
@@ -75,6 +75,7 @@ class SimSuite extends munit.FunSuite:
     val attack = h.windows.filter(_.kind == WindowKind.Attack)
     assertEquals(attack.size, 1)
     val w = attack.head
+    assertEquals(w.rows, 80)
     assertEquals(w.rows, cfg.attackPre + cfg.attackPost)
     assertEquals(w.anchor, cfg.attackPre)
     assertEquals(w.layout, Schema.Combat)
@@ -147,3 +148,27 @@ class SimSuite extends munit.FunSuite:
     assertEquals(hist(Schema.Gate, hit + cfg.combatTicks), 1f)
     h.tick()
     assertEquals(hist(Schema.Gate, hit + cfg.combatTicks + 1), 0f)
+
+  test("Handoff preserves mouse calibration, engagement and in-progress calm track across servers"):
+    val cfg = SimConfig(calmMinTicks = 40, calmMaxTicks = 200)
+    val h1 = Harness(cfg)
+    h1.sim.combat.engagement = 3
+    for _ <- 0 until 285 do h1.tick()
+    assert(RotationSystem.calibrated(h1.sim.rotation), "source sim should be calibrated")
+    assertEquals(h1.sim.calm.length, 25)
+
+    val snapshot = Handoff.encode(h1.sim)
+    val h2 = Harness(cfg)
+    assert(!RotationSystem.calibrated(h2.sim.rotation))
+    assert(Handoff.restore(h2.sim, snapshot))
+    assert(RotationSystem.calibrated(h2.sim.rotation), "restored sim is immediately calibrated")
+    assertEquals(h2.sim.combat.engagement, 3)
+    assertEquals(h2.sim.calm.length, 25)
+
+    for _ <- 0 until (cfg.bufferTicks + 15) do h2.tick()
+    assertEquals(h2.sim.calm.length, 40)
+    WindowSystem.flushCalm(h2.sim)
+    val calm = h2.windows.filter(_.kind == WindowKind.Calm)
+    assertEquals(calm.size, 1)
+    assertEquals(calm.head.rows, 40)
+    assertEquals(calm.head.engagement, 3)

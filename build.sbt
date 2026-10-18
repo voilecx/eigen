@@ -9,6 +9,7 @@ ThisBuild / scalacOptions ++= Seq("-release", "25", "-deprecation", "-feature", 
 val paperApiVersion = "26.2.build.134-stable"
 val packetEventsVersion = "2.14.0"
 val jsoniterVersion = "2.41.5"
+val lettuceVersion = "6.5.5.RELEASE"
 val macwireVersion = "2.6.7"
 val munitVersion = "1.3.6"
 
@@ -61,6 +62,7 @@ lazy val paper = (project in file("paper"))
       "io.papermc.paper" % "paper-api" % paperApiVersion % Provided,
       // Supplied at runtime by the PacketEvents plugin (see `depend` in plugin.yml).
       "com.github.retrooper" % "packetevents-spigot" % packetEventsVersion % Provided,
+      "io.lettuce" % "lettuce-core" % lettuceVersion % Provided,
       // Compile-time only: autowire expands to plain constructor calls.
       "com.softwaremill.macwire" %% "macros" % macwireVersion % Provided,
       "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % jsoniterVersion % Provided,
@@ -89,12 +91,15 @@ def pluginYml(version: String, scalaVersion: String): String =
      |libraries:
      |  - org.scala-lang:scala3-library_3:$scalaVersion
      |  - com.github.plokhotnyuk.jsoniter-scala:jsoniter-scala-core_3:$jsoniterVersion
+     |  - io.lettuce:lettuce-core:$lettuceVersion
      |permissions:
      |  eigen.command:
      |    default: op
      |  eigen.alerts:
      |    default: op
      |  eigen.collect:
+     |    default: op
+     |  eigen.record:
      |    default: op
      |  eigen.admin:
      |    default: op

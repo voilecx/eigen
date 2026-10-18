@@ -32,10 +32,14 @@ enum CollectSink:
 
 final case class BackendSettings(enabled: Boolean, url: URI, token: String, resendBufferBytes: Long)
 
+final case class GarnetSettings(enabled: Boolean, uri: URI, server: String, ttlSeconds: Int)
+
 final case class Settings(
     backend: BackendSettings,
     salt: Array[Byte],
     sink: CollectSink,
+    autoLegit: Boolean,
+    garnet: GarnetSettings,
     sim: SimConfig,
     exemptBedrock: Boolean,
     alertThreshold: Double,
@@ -50,6 +54,7 @@ object Settings:
 
   private val defaults = SimConfig()
   private val DefaultEndpoint = URI.create("wss://eigen.example.com/v1/stream")
+  private val DefaultGarnetUri = URI.create("redis://127.0.0.1:6379")
   private val LoopbackHosts = Set("localhost", "127.0.0.1", "[::1]", "::1")
   private val SaltHexDigits = 64
 
@@ -70,6 +75,21 @@ object Settings:
 
   private val sinkSchema: Read[CollectSink] =
     Read.choice("sink", "server")("server" -> CollectSink.Server, "local" -> CollectSink.Local, "both" -> CollectSink.Both)
+
+  private val collectSchema: Read[(CollectSink, Boolean)] =
+    for
+      sink <- sinkSchema
+      autoLegit <- Read.bool("auto-legit", default = false)
+    yield (sink, autoLegit)
+
+  private val garnetSchema: Read[GarnetSettings] =
+    for
+      enabled <- Read.bool("enabled", default = false)
+      uri <- Read.key("uri", DefaultGarnetUri)(garnetUri)
+      server <- Read.text("server", "default").map(_.trim)
+      _ <- Read.ensure(server.nonEmpty, "server", "must not be empty")
+      ttl <- Read.int("ttl-seconds", default = 600, min = 10)
+    yield GarnetSettings(enabled, uri, server, ttl)
 
   private final case class Detection(sim: SimConfig, exemptBedrock: Boolean)
 
@@ -123,10 +143,25 @@ object Settings:
     for
       backend <- Read.section("backend")(backendSchema)
       salt <- Read.section("privacy")(Read.key("salt", Array.empty[Byte])(hexSalt))
-      sink <- Read.section("collect")(sinkSchema)
+      collect <- Read.section("collect")(collectSchema)
+      garnet <- Read.section("garnet")(garnetSchema)
       detection <- Read.section("detection")(detectionSchema)
       threshold <- Read.section("alerts")(Read.double("threshold", 0.9))
-    yield Settings(backend, salt, sink, detection.sim, detection.exemptBedrock, threshold)
+    yield
+      val (sink, autoLegit) = collect
+      Settings(backend, salt, sink, autoLegit, garnet, detection.sim, detection.exemptBedrock, threshold)
+
+  /** A Garnet/Redis endpoint: `redis://` or `rediss://`. */
+  private def garnetUri(raw: Any): Either[String, URI] = raw match
+    case text: String =>
+      try
+        val uri = URI(text)
+        uri.getScheme match
+          case "redis" | "rediss" if uri.getHost != null && uri.getHost.nonEmpty => Right(uri)
+          case "redis" | "rediss" => Left(s"missing host in '$text'")
+          case _ => Left(s"must be redis:// or rediss://, got '$text'")
+      catch case e: IllegalArgumentException => Left(s"not a URI: ${e.getMessage}")
+    case other => Left(s"must be text, got ${other.getClass.getSimpleName}")
 
   /** A backend endpoint: `wss://` anywhere, `ws://` only for loopback development. */
   private def endpoint(raw: Any): Either[String, URI] = raw match

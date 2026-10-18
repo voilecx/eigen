@@ -28,10 +28,11 @@ import org.bukkit.plugin.java.JavaPlugin
 
 import eigen.core.wire.Messages
 import eigen.paper.config.Settings
+import eigen.paper.garnet.{AlertBroadcast, GarnetBridge}
 import eigen.paper.net.Players
 
 /** Staff notifications for backend verdicts. Staff opt in with `/eigen alerts`. */
-final class Alerts(settings: Settings, players: Players, plugin: JavaPlugin):
+final class Alerts(settings: Settings, players: Players, garnet: GarnetBridge, plugin: JavaPlugin):
   private val listening = ConcurrentHashMap.newKeySet[UUID]()
 
   /** Toggles alerts for `staff`; returns whether they are now on. */
@@ -47,11 +48,30 @@ final class Alerts(settings: Settings, players: Players, plugin: JavaPlugin):
     val p = players.byHandleOrNull(v.handle)
     suspect.foreach: (label, score) =>
       if score >= settings.alertThreshold && p != null then
-        val message = Component
-          .text("[Eigen] ", NamedTextColor.DARK_AQUA)
-          .append(Component.text(p.name, NamedTextColor.WHITE))
-          .append(Component.text(f" $label ${score * 100}%.1f%% (${v.model})", NamedTextColor.GRAY))
-        Bukkit.getGlobalRegionScheduler.execute(plugin, () => broadcast(message))
+        val playerName = p.name
+        garnet.recordViolation(playerName, label, score, v.model): status =>
+          val message = formatAlert(None, playerName, label, score, v.model, status.vl)
+          Bukkit.getGlobalRegionScheduler.execute(plugin, () => broadcast(message))
+
+  /** Handles an alert published by another Paper instance over Garnet Pub/Sub. */
+  def onRemoteAlert(a: AlertBroadcast): Unit =
+    val message = formatAlert(Some(a.server), a.player, a.label, a.score, a.model, a.vl)
+    Bukkit.getGlobalRegionScheduler.execute(plugin, () => broadcast(message))
+
+  private def formatAlert(
+      remoteServer: Option[String],
+      player: String,
+      label: String,
+      score: Double,
+      model: String,
+      vl: Long,
+  ): Component =
+    val prefix = remoteServer.fold("[Eigen] ")(srv => s"[Eigen:$srv] ")
+    Component
+      .text(prefix, NamedTextColor.DARK_AQUA)
+      .append(Component.text(player, NamedTextColor.WHITE))
+      .append(Component.text(f" $label ${score * 100}%.1f%% ($model) ", NamedTextColor.GRAY))
+      .append(Component.text(s"[x$vl]", NamedTextColor.AQUA))
 
   private def broadcast(message: Component): Unit =
     Bukkit.getOnlinePlayers.asScala
