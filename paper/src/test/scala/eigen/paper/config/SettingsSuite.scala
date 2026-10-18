@@ -44,6 +44,7 @@ class SettingsSuite extends munit.FunSuite:
     assertEquals(fromBundled.map(_.sim), fromEmpty.map(_.sim))
     assertEquals(fromBundled.map(_.sink), fromEmpty.map(_.sink))
     assertEquals(fromBundled.map(_.autoLegit), fromEmpty.map(_.autoLegit))
+    assertEquals(fromBundled.map(_.shardCompat), fromEmpty.map(_.shardCompat))
     assertEquals(fromBundled.map(_.garnet), fromEmpty.map(_.garnet))
     assertEquals(fromBundled.map(_.exemptBedrock), fromEmpty.map(_.exemptBedrock))
     assertEquals(fromBundled.map(_.alertThreshold), fromEmpty.map(_.alertThreshold))
@@ -83,3 +84,11 @@ class SettingsSuite extends munit.FunSuite:
   test("collect.auto-legit enables automatic legit session recording"):
     val enabled = settingsFrom(Map("collect" -> Map("auto-legit" -> true)))
     assertEquals(enabled.map(_.autoLegit), Right(true))
+
+  test("collect.shard-compat is disabled by default and configurable"):
+    val defaultCfg = settingsFrom(Map.empty)
+    assertEquals(defaultCfg.map(_.shardCompat.enabled), Right(false))
+    val enabled = settingsFrom(Map("collect" -> Map("shard-compat" -> true, "shard-pre-window" -> 64, "shard-post-window" -> 96)))
+    assertEquals(enabled.map(_.shardCompat.enabled), Right(true))
+    assertEquals(enabled.map(_.shardCompat.preWindow), Right(64))
+    assertEquals(enabled.map(_.shardCompat.postWindow), Right(96))

@@ -20,6 +20,11 @@ collect:
   sink: server
   # Automatically start a self-service legit recording for every non-exempt player on join.
   auto-legit: false
+  # Optional 100%-equivalent Shard 2 dataset collector for head-to-head benchmarks.
+  # Disabled by default; when false, zero Shard listeners or buffers are allocated.
+  shard-compat: false
+  shard-pre-window: 128
+  shard-post-window: 128
 
 garnet:
   # Share mouse calibration, calm baselines, alerts and violation counts across servers via Garnet.

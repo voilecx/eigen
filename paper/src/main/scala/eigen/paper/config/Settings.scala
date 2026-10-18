@@ -23,6 +23,7 @@ import org.bukkit.plugin.java.JavaPlugin
 
 import eigen.config.Read
 import eigen.core.sim.SimConfig
+import eigen.shard.ShardCompatConfig
 
 enum CollectSink:
   case Server, Local, Both
@@ -39,6 +40,7 @@ final case class Settings(
     salt: Array[Byte],
     sink: CollectSink,
     autoLegit: Boolean,
+    shardCompat: ShardCompatConfig,
     garnet: GarnetSettings,
     sim: SimConfig,
     exemptBedrock: Boolean,
@@ -76,11 +78,14 @@ object Settings:
   private val sinkSchema: Read[CollectSink] =
     Read.choice("sink", "server")("server" -> CollectSink.Server, "local" -> CollectSink.Local, "both" -> CollectSink.Both)
 
-  private val collectSchema: Read[(CollectSink, Boolean)] =
+  private val collectSchema: Read[(CollectSink, Boolean, ShardCompatConfig)] =
     for
       sink <- sinkSchema
       autoLegit <- Read.bool("auto-legit", default = false)
-    yield (sink, autoLegit)
+      shardCompat <- Read.bool("shard-compat", default = false)
+      shardPre <- Read.int("shard-pre-window", default = 128, min = 1)
+      shardPost <- Read.int("shard-post-window", default = 128, min = 1)
+    yield (sink, autoLegit, ShardCompatConfig(shardCompat, shardPre, shardPost))
 
   private val garnetSchema: Read[GarnetSettings] =
     for
@@ -148,8 +153,8 @@ object Settings:
       detection <- Read.section("detection")(detectionSchema)
       threshold <- Read.section("alerts")(Read.double("threshold", 0.9))
     yield
-      val (sink, autoLegit) = collect
-      Settings(backend, salt, sink, autoLegit, garnet, detection.sim, detection.exemptBedrock, threshold)
+      val (sink, autoLegit, shardCompat) = collect
+      Settings(backend, salt, sink, autoLegit, shardCompat, garnet, detection.sim, detection.exemptBedrock, threshold)
 
   /** A Garnet/Redis endpoint: `redis://` or `rediss://`. */
   private def garnetUri(raw: Any): Either[String, URI] = raw match

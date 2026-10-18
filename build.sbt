@@ -19,7 +19,7 @@ val paperRepos = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, config, commands, paper)
+  .aggregate(core, config, commands, shard, paper)
   .settings(
     name := "eigen",
     publish / skip := true,
@@ -52,9 +52,22 @@ lazy val commands = (project in file("commands"))
     libraryDependencies += "io.papermc.paper" % "paper-api" % paperApiVersion % Provided,
   )
 
+// Optional Shard 2 (KaelusAI/Shard) 100%-equivalent dataset collector for head-to-head benchmarks.
+// Loaded via ServiceLoader only when `collect.shard-compat.enabled: true`.
+lazy val shard = (project in file("shard"))
+  .settings(
+    name := "eigen-shard",
+    resolvers ++= paperRepos,
+    libraryDependencies ++= Seq(
+      "io.papermc.paper" % "paper-api" % paperApiVersion % Provided,
+      "com.github.retrooper" % "packetevents-spigot" % packetEventsVersion % Provided,
+      "org.scalameta" %% "munit" % munitVersion % Test,
+    ),
+  )
+
 // Paper/Folia adapter: packet listeners, transport, collection, commands.
 lazy val paper = (project in file("paper"))
-  .dependsOn(core, commands, config)
+  .dependsOn(core, commands, config, shard)
   .settings(
     name := "eigen-paper",
     resolvers ++= paperRepos,

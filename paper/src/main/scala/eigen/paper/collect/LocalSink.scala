@@ -61,10 +61,14 @@ final class LocalSink(root: Path, log: Logger):
   private final class Open(val dir: Path, val windows: FileChannel):
     var nextId = 1
 
+  /** Computes the local session directory path for `s`. */
+  def sessionDir(s: CollectSession): Path =
+    val time = Stamp.format(Instant.ofEpochMilli(s.startedAt))
+    root.resolve(s"${s.label.wire}_${safe(s.playerName)}_${time}_${s.uuid.toString.take(8)}")
+
   def start(s: CollectSession): Unit = io.execute: () =>
     attempt(s, "open"):
-      val time = Stamp.format(Instant.ofEpochMilli(s.startedAt))
-      val dir = root.resolve(s"${s.label.wire}_${safe(s.playerName)}_${time}_${s.uuid.toString.take(8)}")
+      val dir = sessionDir(s)
       Files.createDirectories(dir)
       Files.write(dir.resolve("manifest.json"), Manifest.bytes)
       writeMeta(dir, s, stoppedAt = 0L)

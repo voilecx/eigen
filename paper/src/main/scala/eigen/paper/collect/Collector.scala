@@ -28,13 +28,14 @@ import eigen.core.wire.Messages
 import eigen.paper.config.Settings
 import eigen.paper.net.{EigenPlayer, Players}
 import eigen.paper.stream.StreamClient
+import eigen.shard.ShardCompat
 
 /**
  * Dataset collection: starts and stops labelled recordings of players and records segment
  * marks. Called from commands on the server thread; changes that touch a player's simulation
  * are posted to its network thread.
  */
-final class Collector(settings: Settings, players: Players, stream: StreamClient, local: LocalSink):
+final class Collector(settings: Settings, players: Players, stream: StreamClient, local: LocalSink, shardCompat: ShardCompat):
   private val sessions = ConcurrentHashMap[UUID, CollectSession]()
   private val ids = AtomicInteger(0)
 
@@ -73,7 +74,15 @@ final class Collector(settings: Settings, players: Players, stream: StreamClient
       else
         if settings.sink.server then
           stream.sessionStarted(Messages.CollectStart(s.id, s.uuid.toString, s.handle, label.wire, tags, note, s.startedAt))
-        if settings.sink.local then local.start(s)
+        val eigenDir = if settings.sink.local then
+          local.start(s)
+          local.sessionDir(s)
+        else null
+        if shardCompat.enabled then
+          val details =
+            val tagPart = tags.map((k, v) => s"$k=$v").mkString(" ")
+            Seq(tagPart, note).filter(_.nonEmpty).mkString(" ")
+          shardCompat.startSession(targetUuid, targetName, label.wire, details, s.startedAt, eigenDir)
         // The session becomes visible to the simulation only after the start was queued, so no
         // window can reference a session the backend has not heard of.
         p.post(() => p.session = s)
@@ -111,6 +120,7 @@ final class Collector(settings: Settings, players: Players, stream: StreamClient
           p.session = null
         if settings.sink.server then stream.sessionStopped(Messages.CollectStop(s.id, stoppedAt))
         if settings.sink.local then local.stop(s, stoppedAt)
+        if shardCompat.enabled then shardCompat.stopSession(target)
       if p == null || direct then close.run() else p.post(close)
       Right(s)
 

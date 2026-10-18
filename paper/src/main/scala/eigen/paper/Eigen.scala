@@ -28,6 +28,7 @@ import eigen.paper.config.Settings
 import eigen.paper.garnet.GarnetBridge
 import eigen.paper.net.{Inbound, Outbound, Players}
 import eigen.paper.stream.StreamClient
+import eigen.shard.ShardCompat
 
 /**
  * The plugin's object graph. Built at compile time by MacWire's `autowire` in [[Eigen.wire]]:
@@ -37,6 +38,7 @@ final class Eigen(
     plugin: JavaPlugin,
     stream: StreamClient,
     local: LocalSink,
+    shardCompat: ShardCompat,
     garnet: GarnetBridge,
     players: Players,
     collector: Collector,
@@ -52,6 +54,7 @@ final class Eigen(
     stream.onVerdict = alerts.onVerdict
     garnet.start(alerts.onRemoteAlert)
     stream.start()
+    shardCompat.start()
     val events = PacketEvents.getAPI.getEventManager
     events.registerListener(inbound)
     events.registerListener(outbound)
@@ -66,6 +69,7 @@ final class Eigen(
     events.unregisterListener(inbound)
     events.unregisterListener(outbound)
     collector.stopAll()
+    shardCompat.stop()
     stream.stop()
     garnet.stop()
     local.shutdown()
@@ -80,6 +84,8 @@ object Eigen:
       s"${Bukkit.getName} ${Bukkit.getMinecraftVersion}",
       plugin.getLogger,
     )
-    val local = LocalSink(plugin.getDataFolder.toPath.resolve("collect"), plugin.getLogger)
+    val collectRoot = plugin.getDataFolder.toPath.resolve("collect")
+    val local = LocalSink(collectRoot, plugin.getLogger)
+    val shardCompat = ShardCompat.load(plugin, collectRoot.resolve("shard"), settings.shardCompat, plugin.getLogger)
     val garnet = GarnetBridge(settings, plugin.getLogger)
-    autowire[Eigen](plugin, settings, stream, local, garnet)
+    autowire[Eigen](plugin, settings, stream, local, shardCompat, garnet)
