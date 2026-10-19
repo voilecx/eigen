@@ -18,9 +18,12 @@ package eigen.paper.config
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets.UTF_8
 
+import com.github.retrooper.packetevents.manager.server.ServerVersion
+import com.github.retrooper.packetevents.protocol.packettype.PacketType
 import org.bukkit.configuration.file.YamlConfiguration
 
 import eigen.config.Source
+import eigen.paper.net.{PacketTable, ServerProtocol}
 
 class SettingsSuite extends munit.FunSuite:
 
@@ -92,3 +95,37 @@ class SettingsSuite extends munit.FunSuite:
     assertEquals(enabled.map(_.shardCompat.enabled), Right(true))
     assertEquals(enabled.map(_.shardCompat.preWindow), Right(64))
     assertEquals(enabled.map(_.shardCompat.postWindow), Right(96))
+
+  test("ServerProtocol selects ModernPing on 1.17+ and LegacyWindowConfirmation on < 1.17"):
+    val modern = ServerProtocol.forVersion(ServerVersion.V_1_21_4)
+    assertEquals(modern, ServerProtocol.ModernPing)
+    assertEquals(modern.livingFlagsIndex, 8)
+    assertEquals(modern.outboundTransactionType, PacketType.Play.Server.PING)
+    assertEquals(modern.inboundTransactionType, PacketType.Play.Client.PONG)
+
+    val v116 = ServerProtocol.forVersion(ServerVersion.V_1_16_5)
+    assertEquals(v116.livingFlagsIndex, 7)
+    assertEquals(v116.outboundTransactionType, PacketType.Play.Server.WINDOW_CONFIRMATION)
+    assertEquals(v116.inboundTransactionType, PacketType.Play.Client.WINDOW_CONFIRMATION)
+
+    val v112 = ServerProtocol.forVersion(ServerVersion.V_1_12_2)
+    assertEquals(v112.livingFlagsIndex, 6)
+    assertEquals(v112.outboundTransactionType, PacketType.Play.Server.WINDOW_CONFIRMATION)
+
+    val v18 = ServerProtocol.forVersion(ServerVersion.V_1_8_8)
+    assertEquals(v18.livingFlagsIndex, 5)
+    assertEquals(v18.outboundTransactionType, PacketType.Play.Server.WINDOW_CONFIRMATION)
+
+  test("PacketTable dispatches in O(1) by enum ordinal and returns null for unrelated packet types"):
+    import PacketType.Play.Client as C
+    val table = PacketTable.build[C, String](C.values)(
+      C.PONG -> "pong",
+      C.ATTACK -> "attack",
+      C.CLIENT_TICK_END -> "tick_end",
+    )
+    assertEquals(table.get(C.PONG), "pong")
+    assertEquals(table.get(C.ATTACK), "attack")
+    assertEquals(table.get(C.CLIENT_TICK_END), "tick_end")
+    assertEquals(table.get(C.ANIMATION), null)
+    assertEquals(table.get(PacketType.Play.Server.PING), null)
+    assertEquals(table.get(PacketType.Configuration.Client.PLUGIN_MESSAGE), null)

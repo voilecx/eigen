@@ -18,7 +18,7 @@ package eigen.paper.net
 import java.nio.charset.StandardCharsets.UTF_8
 
 import com.github.retrooper.packetevents.event.{PacketListenerAbstract, PacketListenerPriority, PacketReceiveEvent, UserDisconnectEvent, UserLoginEvent}
-import com.github.retrooper.packetevents.protocol.packettype.{PacketType, PacketTypeCommon}
+import com.github.retrooper.packetevents.protocol.packettype.PacketType
 import com.github.retrooper.packetevents.protocol.player.{DiggingAction, InteractionHand}
 import com.github.retrooper.packetevents.wrapper.configuration.client.WrapperConfigClientPluginMessage
 import com.github.retrooper.packetevents.wrapper.play.client.*
@@ -29,9 +29,58 @@ import eigen.paper.collect.Collector
  * Client → server packets. Runs on the connection's network thread at the lowest priority, so
  * it sees every packet the client sent even if another plugin later cancels it. Only our own
  * transaction answers are cancelled.
+ *
+ * Dispatch is an O(1) array lookup indexed by `PacketType.Play.Client.ordinal` via [[PacketTable]],
+ * with the server-version-specific transaction packet (`PONG` on 1.17+, `WINDOW_CONFIRMATION` on
+ * `< 1.17`) bound once at construction time through [[ServerProtocol]].
  */
 final class Inbound(players: Players, collector: Collector) extends PacketListenerAbstract(PacketListenerPriority.LOWEST):
+  import Inbound.Handler
   import PacketType.Play.Client as C
+
+  private val protocol: ServerProtocol = ServerProtocol.current
+  private val flyingHandler: Handler = (p, event) =>
+    val f = WrapperPlayClientPlayerFlying(event)
+    val loc = f.getLocation
+    prepareTick(p)
+    p.sim.onFlying(f.hasPositionChanged, loc.getX, loc.getY, loc.getZ, f.hasRotationChanged, loc.getYaw, loc.getPitch, f.isOnGround)
+
+  private val table: PacketTable[C, Handler] = PacketTable.build(C.values)(
+    protocol.inboundTransactionType -> ((p, event) =>
+      val id = protocol.readAckId(event)
+      if id != 0 && p.clock.onPong(id) then event.setCancelled(true)
+    ),
+    C.CLIENT_TICK_END -> ((p, _) => { prepareTick(p); p.sim.onTickEnd() }),
+    C.PLAYER_INPUT -> ((p, event) =>
+      val i = WrapperPlayClientPlayerInput(event)
+      p.sim.onInput(i.isForward, i.isBackward, i.isLeft, i.isRight, i.isJump, i.isShift, i.isSprint)
+    ),
+    C.INTERACT_ENTITY -> ((p, event) =>
+      val i = WrapperPlayClientInteractEntity(event)
+      if i.getAction == WrapperPlayClientInteractEntity.InteractAction.ATTACK then p.sim.onAttack(i.getEntityId)
+    ),
+    C.ATTACK -> ((p, event) => p.sim.onAttack(WrapperPlayClientAttack(event).getEntityId)),
+    C.ANIMATION -> ((p, event) =>
+      if WrapperPlayClientAnimation(event).getHand == InteractionHand.MAIN_HAND then p.sim.onSwing()
+    ),
+    C.USE_ITEM -> ((p, _) => p.sim.onUse()),
+    C.PLAYER_BLOCK_PLACEMENT -> ((p, _) => p.sim.onPlace()),
+    C.PLAYER_DIGGING -> ((p, event) =>
+      if WrapperPlayClientPlayerDigging(event).getAction == DiggingAction.START_DIGGING then p.sim.onDig()
+    ),
+    C.HELD_ITEM_CHANGE -> ((p, event) => p.sim.onSlot(WrapperPlayClientHeldItemChange(event).getSlot)),
+    C.ENTITY_ACTION -> ((p, event) => entityAction(p, WrapperPlayClientEntityAction(event).getAction)),
+    C.CLICK_WINDOW -> ((p, _) => p.sim.onGui(true)),
+    C.CLOSE_WINDOW -> ((p, _) => p.sim.onGui(false)),
+    C.PLUGIN_MESSAGE -> ((_, event) =>
+      val m = WrapperPlayClientPluginMessage(event)
+      brand(event, m.getChannelName, m.getData)
+    ),
+    C.PLAYER_FLYING -> flyingHandler,
+    C.PLAYER_POSITION -> flyingHandler,
+    C.PLAYER_ROTATION -> flyingHandler,
+    C.PLAYER_POSITION_AND_ROTATION -> flyingHandler,
+  )
 
   override def onUserLogin(event: UserLoginEvent): Unit =
     val p = players.get(event.getUser)
@@ -53,40 +102,8 @@ final class Inbound(players: Players, collector: Collector) extends PacketListen
       val p = players.get(event.getUser)
       if p != null then
         p.drain()
-        route(p, event, tpe)
-
-  private def route(p: EigenPlayer, event: PacketReceiveEvent, tpe: PacketTypeCommon): Unit = tpe match
-    case C.PONG =>
-      if p.clock.onPong(WrapperPlayClientPong(event).getId) then event.setCancelled(true)
-    case C.CLIENT_TICK_END =>
-      prepareTick(p)
-      p.sim.onTickEnd()
-    case C.PLAYER_INPUT =>
-      val i = WrapperPlayClientPlayerInput(event)
-      p.sim.onInput(i.isForward, i.isBackward, i.isLeft, i.isRight, i.isJump, i.isShift, i.isSprint)
-    case C.INTERACT_ENTITY =>
-      val i = WrapperPlayClientInteractEntity(event)
-      if i.getAction == WrapperPlayClientInteractEntity.InteractAction.ATTACK then p.sim.onAttack(i.getEntityId)
-    case C.ATTACK => p.sim.onAttack(WrapperPlayClientAttack(event).getEntityId)
-    case C.ANIMATION =>
-      if WrapperPlayClientAnimation(event).getHand == InteractionHand.MAIN_HAND then p.sim.onSwing()
-    case C.USE_ITEM => p.sim.onUse()
-    case C.PLAYER_BLOCK_PLACEMENT => p.sim.onPlace()
-    case C.PLAYER_DIGGING =>
-      if WrapperPlayClientPlayerDigging(event).getAction == DiggingAction.START_DIGGING then p.sim.onDig()
-    case C.HELD_ITEM_CHANGE => p.sim.onSlot(WrapperPlayClientHeldItemChange(event).getSlot)
-    case C.ENTITY_ACTION => entityAction(p, WrapperPlayClientEntityAction(event).getAction)
-    case C.CLICK_WINDOW => p.sim.onGui(true)
-    case C.CLOSE_WINDOW => p.sim.onGui(false)
-    case C.PLUGIN_MESSAGE =>
-      val m = WrapperPlayClientPluginMessage(event)
-      brand(event, m.getChannelName, m.getData)
-    case _ if WrapperPlayClientPlayerFlying.isFlying(tpe) =>
-      val f = WrapperPlayClientPlayerFlying(event)
-      val loc = f.getLocation
-      prepareTick(p)
-      p.sim.onFlying(f.hasPositionChanged, loc.getX, loc.getY, loc.getZ, f.hasRotationChanged, loc.getYaw, loc.getPitch, f.isOnGround)
-    case _ => ()
+        val h = table.get(tpe)
+        if h != null then h.handle(p, event)
 
   private def entityAction(p: EigenPlayer, action: WrapperPlayClientEntityAction.Action): Unit =
     import WrapperPlayClientEntityAction.Action
@@ -107,3 +124,8 @@ final class Inbound(players: Players, collector: Collector) extends PacketListen
     if (channel == "minecraft:brand" || channel == "MC|Brand") && data.length > 1 && data.length < 256 then
       val text = String(data, 1, data.length - 1, UTF_8).replace(" (Velocity)", "")
       players.rememberBrand(event.getUser, text.take(64))
+
+object Inbound:
+  @FunctionalInterface
+  trait Handler:
+    def handle(p: EigenPlayer, event: PacketReceiveEvent): Unit

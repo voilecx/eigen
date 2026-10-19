@@ -343,6 +343,396 @@ final class ActiveShardCompat(
     val sp = players.remove(user)
     if sp != null then stopSession(sp.uuid)
 
+  import PacketType.Play.Client as C
+  import PacketType.Play.Server as S
+
+  @FunctionalInterface
+  private trait ReceiveRoute:
+    def apply(event: PacketReceiveEvent, sp: ShardPlayer): Unit
+
+  @FunctionalInterface
+  private trait SendRoute:
+    def apply(event: PacketSendEvent, sp: ShardPlayer): Unit
+
+  // Server-version constants resolved once at startup (eliminates per-packet version branches).
+  private val serverVersion: ServerVersion =
+    try PacketEvents.getAPI.getServerManager.getVersion
+    catch case _: Throwable => ServerVersion.V_1_21_4
+  private val hasDimensionMinY: Boolean = serverVersion.isNewerThanOrEquals(ServerVersion.V_1_17)
+  private val serverClientVersion: ClientVersion = serverVersion.toClientVersion
+  private val livingFlagsIndex: Int =
+    if serverVersion.isNewerThanOrEquals(ServerVersion.V_1_17) then 8
+    else if serverVersion.isNewerThanOrEquals(ServerVersion.V_1_14) then 7
+    else if serverVersion.isNewerThanOrEquals(ServerVersion.V_1_10) then 6
+    else 5
+  private val fireworkAttachedIndex: Int =
+    9 - (if serverVersion.isOlderThanOrEquals(ServerVersion.V_1_12_2) then 2
+         else if serverVersion.isOlderThanOrEquals(ServerVersion.V_1_16_5) then 1
+         else 0)
+
+  private val receiveRoutes: Array[ReceiveRoute | Null] =
+    val t = new Array[ReceiveRoute | Null](C.values.length)
+    inline def on(k: C)(f: ReceiveRoute): Unit = t(k.ordinal) = f
+    on(C.INTERACT_ENTITY): (event, sp) =>
+      val interact = WrapperPlayClientInteractEntity(event)
+      if interact.getAction == WrapperPlayClientInteractEntity.InteractAction.ATTACK then
+        onAttack(interact.getEntityId, sp)
+    on(C.ATTACK): (event, sp) =>
+      onAttack(WrapperPlayClientAttack(event).getEntityId, sp)
+    on(C.PLAYER_BLOCK_PLACEMENT): (event, sp) =>
+      onPlacement(event, sp)
+    on(C.ANIMATION): (event, sp) =>
+      if WrapperPlayClientAnimation(event).getHand == InteractionHand.MAIN_HAND then sp.tracking.onSwing()
+    on(C.USE_ITEM): (_, sp) =>
+      sp.tracking.ticksSinceUseItem = 0
+    on(C.PLAYER_DIGGING): (event, sp) =>
+      val dig = WrapperPlayClientPlayerDigging(event)
+      if dig.getAction == DiggingAction.RELEASE_USE_ITEM then
+        sp.tracking.isUsingItem = false
+        sp.tracking.updateActiveItem()
+      if dig.getAction == DiggingAction.SWAP_ITEM_WITH_OFFHAND then
+        sp.tracking.swapOffhand()
+        refreshAttackSpeed(sp)
+    on(C.HELD_ITEM_CHANGE): (event, sp) =>
+      val tracking = sp.tracking
+      tracking.isUsingItem = false
+      tracking.updateActiveItem()
+      tracking.cooldownTicks = 0
+      tracking.heldSlot = WrapperPlayClientHeldItemChange(event).getSlot
+      tracking.onSlotSwitch()
+      refreshAttackSpeed(sp)
+    on(C.ENTITY_ACTION): (event, sp) =>
+      val tracking = sp.tracking
+      WrapperPlayClientEntityAction(event).getAction match
+        case WrapperPlayClientEntityAction.Action.START_SPRINTING => tracking.sprinting = true
+        case WrapperPlayClientEntityAction.Action.STOP_SPRINTING => tracking.sprinting = false
+        case WrapperPlayClientEntityAction.Action.START_SNEAKING => tracking.sneaking = true
+        case WrapperPlayClientEntityAction.Action.STOP_SNEAKING => tracking.sneaking = false
+        case WrapperPlayClientEntityAction.Action.START_FLYING_WITH_ELYTRA => tracking.gliding = true
+        case _ => ()
+    on(C.PLAYER_ABILITIES): (event, sp) =>
+      sp.tracking.flying = WrapperPlayClientPlayerAbilities(event).isFlying
+    on(C.PLAYER_INPUT): (event, sp) =>
+      val tracking = sp.tracking
+      val input = WrapperPlayClientPlayerInput(event)
+      tracking.inputForward = input.isForward
+      tracking.inputBackward = input.isBackward
+      tracking.inputLeft = input.isLeft
+      tracking.inputRight = input.isRight
+      tracking.inputJump = input.isJump
+      tracking.inputShift = input.isShift
+      tracking.inputSprint = input.isSprint
+      tracking.inputValid = sp.clientVersion.isNewerThanOrEquals(ClientVersion.V_1_21_2)
+      if sp.clientVersion.isNewerThanOrEquals(ClientVersion.V_1_21_6) then
+        tracking.sneaking = input.isShift
+    on(C.STEER_VEHICLE): (event, sp) =>
+      val tracking = sp.tracking
+      val steer = WrapperPlayClientSteerVehicle(event)
+      tracking.inputForward = steer.getForward > 0f
+      tracking.inputBackward = steer.getForward < 0f
+      tracking.inputLeft = steer.getSideways > 0f
+      tracking.inputRight = steer.getSideways < 0f
+      tracking.inputJump = steer.isJump
+      tracking.inputShift = steer.isUnmount
+      tracking.inputValid = true
+    on(C.VEHICLE_MOVE): (event, sp) =>
+      if sp.tracking.inVehicle then
+        val pos = WrapperPlayClientVehicleMove(event).getPosition
+        sp.movement.x = pos.getX
+        sp.movement.y = pos.getY
+        sp.movement.z = pos.getZ
+    t
+
+  @annotation.nowarn("cat=deprecation")
+  private val sendRoutes: Array[SendRoute | Null] =
+    val t = new Array[SendRoute | Null](S.values.length)
+    inline def on(k: S)(f: SendRoute): Unit = t(k.ordinal) = f
+    on(S.ENTITY_VELOCITY): (event, player) =>
+      val vel = WrapperPlayServerEntityVelocity(event)
+      if vel.getEntityId == player.entityId then
+        val v = vel.getVelocity
+        player.latencyUtils.addRealTimeTask(
+          player.bracketTransaction(event),
+          () => player.tracking.onKnockback(v.getX, v.getY, v.getZ),
+        )
+    on(S.EXPLOSION): (event, player) =>
+      val kb = WrapperPlayServerExplosion(event).getPlayerMotion
+      if kb != null && (kb.getX != 0f || kb.getY != 0f || kb.getZ != 0f) then
+        player.latencyUtils.addRealTimeTask(
+          player.bracketTransaction(event),
+          () => {
+            player.tracking.onExplosion(kb.getX, kb.getY, kb.getZ)
+            player.tracking.raiseWindowStart(ShardTickData.START_EXPLOSION_RECEIVED)
+          },
+        )
+    on(S.ENTITY_EFFECT): (event, player) =>
+      val eff = WrapperPlayServerEntityEffect(event)
+      if eff.getEntityId == player.entityId then
+        val pt = eff.getPotionType
+        val amp = eff.getEffectAmplifier
+        player.latencyUtils.addRealTimeTask(player.bracketTransaction(event), () => applyPotion(player.tracking, pt, amp))
+    on(S.REMOVE_ENTITY_EFFECT): (event, player) =>
+      val rem = WrapperPlayServerRemoveEntityEffect(event)
+      if rem.getEntityId == player.entityId then
+        val pt = rem.getPotionType
+        player.latencyUtils.addRealTimeTask(player.bracketTransaction(event), () => clearPotion(player.tracking, pt))
+    on(S.PLAYER_ABILITIES): (event, player) =>
+      val flying = WrapperPlayServerPlayerAbilities(event).isFlying
+      player.latencyUtils.addRealTimeTask(player.bracketTransaction(event), () => player.tracking.flying = flying)
+    on(S.UPDATE_HEALTH): (event, player) =>
+      val u = WrapperPlayServerUpdateHealth(event)
+      val food = u.getFood
+      val newHealth = u.getHealth
+      player.latencyUtils.addRealTimeTask(
+        player.bracketTransaction(event),
+        () => {
+          val tr = player.tracking
+          val lost = tr.health - newHealth
+          if lost > 0f then
+            tr.damageTakenThisTick = lost
+            tr.ticksSinceDamage = 0
+          tr.health = newHealth
+          tr.foodLevel = food
+        },
+      )
+    on(S.CHANGE_GAME_STATE): (event, player) =>
+      val gs = WrapperPlayServerChangeGameState(event)
+      if gs.getReason == WrapperPlayServerChangeGameState.Reason.CHANGE_GAME_MODE then
+        player.tracking.gameMode = gs.getValue.toInt
+    on(S.JOIN_GAME): (event, player) =>
+      val join = WrapperPlayServerJoinGame(event)
+      player.tracking.onSequenceBreak()
+      val gm = join.getGameMode
+      player.entityId = join.getEntityId
+      player.gameMode = gm
+      player.tracking.gameMode = gm.ordinal
+      player.compensatedEntities.clear()
+      player.compensatedWorld.clear()
+      if hasDimensionMinY then
+        try player.compensatedWorld.updateMinHeight(join.getDimensionType.getMinY(player.clientVersion))
+        catch case _: Throwable => ()
+      player.sendAfter(event)
+    on(S.RESPAWN): (event, player) =>
+      val respawn = WrapperPlayServerRespawn(event)
+      player.tracking.onSequenceBreak()
+      player.gameMode = respawn.getGameMode
+      player.tracking.gameMode = respawn.getGameMode.ordinal
+      val minY =
+        try Some(respawn.getDimensionType.getMinY(player.clientVersion))
+        catch case _: Throwable => None
+      player.latencyUtils.addRealTimeTask(
+        player.bracketTransaction(event),
+        () => {
+          player.compensatedEntities.clear()
+          player.compensatedWorld.clear()
+          minY.foreach(player.compensatedWorld.updateMinHeight)
+        },
+      )
+    on(S.SPAWN_ENTITY): (event, player) =>
+      val sp = WrapperPlayServerSpawnEntity(event)
+      val id = sp.getEntityId
+      if id >= 0 then
+        val uuid = sp.getUUID.orElse(UUID(0L, id.toLong))
+        val tpe = sp.getEntityType
+        val pos = sp.getPosition
+        player.latencyUtils.addRealTimeTask(
+          player.spawnTransaction(id),
+          () => {
+            player.compensatedEntities.addEntity(id, uuid, tpe, pos.getX, pos.getY, pos.getZ)
+            if tpe == EntityTypes.END_CRYSTAL then
+              player.crystalTracker.onCrystalSpawn(id, player.tracking.tickIndex)
+          },
+        )
+    on(S.SPAWN_LIVING_ENTITY): (event, player) =>
+      val sp = WrapperPlayServerSpawnLivingEntity(event)
+      val id = sp.getEntityId
+      val uuid = sp.getEntityUUID
+      val tpe = sp.getEntityType
+      val pos = sp.getPosition
+      player.latencyUtils.addRealTimeTask(
+        player.spawnTransaction(id),
+        () => player.compensatedEntities.addEntity(id, uuid, tpe, pos.getX, pos.getY, pos.getZ),
+      )
+    on(S.SPAWN_PAINTING): (event, player) =>
+      val sp = WrapperPlayServerSpawnPainting(event)
+      val id = sp.getEntityId
+      val uuid = sp.getUUID
+      player.latencyUtils.addRealTimeTask(
+        player.spawnTransaction(id),
+        () => player.compensatedEntities.addEntity(id, uuid, EntityTypes.PAINTING),
+      )
+    on(S.SPAWN_PLAYER): (event, player) =>
+      val sp = WrapperPlayServerSpawnPlayer(event)
+      val id = sp.getEntityId
+      val uuid = sp.getUUID
+      val pos = sp.getPosition
+      player.latencyUtils.addRealTimeTask(
+        player.spawnTransaction(id),
+        () => player.compensatedEntities.addEntity(id, uuid, EntityTypes.PLAYER, pos.getX, pos.getY, pos.getZ),
+      )
+    on(S.DESTROY_ENTITIES): (event, player) =>
+      val ids = WrapperPlayServerDestroyEntities(event).getEntityIds
+      ids.foreach(id => player.transactions.noteDespawned(id))
+      val destroyTrans = player.lastSentTransaction()
+      player.latencyUtils.addRealTimeTask(
+        destroyTrans,
+        () => {
+          val self = player.compensatedEntities.self
+          ids.foreach: id =>
+            player.crystalTracker.onEntityRemoved(id)
+            val ent = player.compensatedEntities.getEntity(id)
+            if ent != null then
+              ent.isDead = true
+              if self.riding eq ent then self.eject()
+        },
+      )
+      player.latencyUtils.addRealTimeTask(
+        destroyTrans + 1,
+        () => {
+          ids.foreach: id =>
+            player.compensatedEntities.removeEntity(id)
+            player.compensatedFireworks.removeFirework(id)
+        },
+      )
+    on(S.ENTITY_STATUS): (event, player) =>
+      val st = WrapperPlayServerEntityStatus(event)
+      if st.getStatus == 3 then
+        val id = st.getEntityId
+        player.latencyUtils.addRealTimeTask(
+          player.bracketTransaction(event),
+          () => {
+            val ent = player.compensatedEntities.getEntity(id)
+            if ent != null then ent.isDead = true
+          },
+        )
+    on(S.UPDATE_ATTRIBUTES): (event, player) =>
+      val attrs = WrapperPlayServerUpdateAttributes(event)
+      val id = attrs.getEntityId
+      val props = attrs.getProperties
+      val trans = if id == player.entityId then player.bracketTransaction(event) else player.lastSentTransaction()
+      player.latencyUtils.addRealTimeTask(trans, () => player.compensatedEntities.updateAttributes(id, props))
+    on(S.ENTITY_METADATA): (event, player) =>
+      onMetadata(event, player)
+    on(S.ENTITY_RELATIVE_MOVE): (event, player) =>
+      val m = WrapperPlayServerEntityRelativeMove(event)
+      moveEntity(player, m.getEntityId, Vector3d(m.getDeltaX, m.getDeltaY, m.getDeltaZ), relative = true, hasPos = true)
+    on(S.ENTITY_RELATIVE_MOVE_AND_ROTATION): (event, player) =>
+      val m = WrapperPlayServerEntityRelativeMoveAndRotation(event)
+      moveEntity(player, m.getEntityId, Vector3d(m.getDeltaX, m.getDeltaY, m.getDeltaZ), relative = true, hasPos = true)
+    on(S.ENTITY_TELEPORT): (event, player) =>
+      val tp = WrapperPlayServerEntityTeleport(event)
+      moveEntity(player, tp.getEntityId, tp.getPosition, relative = false, hasPos = true)
+    on(S.ENTITY_ROTATION): (event, player) =>
+      val r = WrapperPlayServerEntityRotation(event)
+      moveEntity(player, r.getEntityId, Vector3d(0.0, 0.0, 0.0), relative = true, hasPos = false)
+    on(S.ENTITY_POSITION_SYNC): (event, player) =>
+      val sync = WrapperPlayServerEntityPositionSync(event)
+      moveEntity(player, sync.getId, sync.getValues.getPosition, relative = false, hasPos = true)
+    on(S.SET_PASSENGERS): (event, player) =>
+      val w = WrapperPlayServerSetPassengers(event)
+      val vehicleId = w.getEntityId
+      val isPassenger = w.getPassengers.contains(player.entityId)
+      player.latencyUtils.addRealTimeTask(
+        player.bracketTransaction(event),
+        () => {
+          val self = player.compensatedEntities.self
+          val vehicle = player.compensatedEntities.getEntity(vehicleId)
+          if vehicle != null then
+            if isPassenger then
+              self.mount(vehicle)
+              player.tracking.inVehicle = true
+            else if self.riding eq vehicle then
+              self.eject()
+              player.tracking.inVehicle = self.riding != null
+        },
+      )
+    on(S.ATTACH_ENTITY): (event, player) =>
+      val w = WrapperPlayServerAttachEntity(event)
+      if !w.isLeash && w.getAttachedId == player.entityId then
+        val holdingId = w.getHoldingId
+        player.latencyUtils.addRealTimeTask(
+          player.bracketTransaction(event),
+          () => {
+            val self = player.compensatedEntities.self
+            if holdingId != -1 then
+              val vehicle = player.compensatedEntities.getEntity(holdingId)
+              if vehicle != null then
+                self.mount(vehicle)
+                player.tracking.inVehicle = true
+            else if self.riding != null then
+              self.eject()
+              player.tracking.inVehicle = self.riding != null
+          },
+        )
+    on(S.CHUNK_DATA): (event, player) =>
+      val col = WrapperPlayServerChunkData(event).getColumn
+      val sections = col.getChunks
+      if sections != null then player.compensatedWorld.onChunkLoad(col.getX, col.getZ, sections)
+    on(S.UNLOAD_CHUNK): (event, player) =>
+      val u = WrapperPlayServerUnloadChunk(event)
+      player.compensatedWorld.onChunkUnload(u.getChunkX, u.getChunkZ)
+    on(S.BLOCK_CHANGE): (event, player) =>
+      val bc = WrapperPlayServerBlockChange(event)
+      val pos = bc.getBlockPosition
+      val st = bc.getBlockState
+      player.latencyUtils.addRealTimeTask(
+        player.lastSentTransaction(),
+        () => player.compensatedWorld.setBlock(pos.getX, pos.getY, pos.getZ, st),
+      )
+    on(S.MULTI_BLOCK_CHANGE): (event, player) =>
+      val mb = WrapperPlayServerMultiBlockChange(event)
+      val changes = mb.getBlocks.map(b => (b.getX, b.getY, b.getZ, b.getBlockState(serverClientVersion)))
+      player.latencyUtils.addRealTimeTask(
+        player.lastSentTransaction(),
+        () => changes.foreach((x, y, z, st) => player.compensatedWorld.setBlock(x, y, z, st)),
+      )
+    on(S.SET_SLOT): (event, player) =>
+      val w = WrapperPlayServerSetSlot(event)
+      if w.getWindowId == 0 then
+        val tracking = player.tracking
+        val hotbarIdx = w.getSlot - 36
+        val itemType = if w.getItem != null then w.getItem.getType else null
+        if w.getSlot == 45 then
+          tracking.offhandItem = itemType
+          tracking.updateActiveItem()
+        else if hotbarIdx >= 0 && hotbarIdx < ShardTrackingState.HOTBAR_SIZE then
+          tracking.hotbarItems(hotbarIdx) = itemType
+          tracking.updateActiveItem()
+          refreshAttackSpeed(player)
+    on(S.WINDOW_ITEMS): (event, player) =>
+      val w = WrapperPlayServerWindowItems(event)
+      if w.getWindowId == 0 then
+        val items = w.getItems
+        val tracking = player.tracking
+        var i = 0
+        while i < ShardTrackingState.HOTBAR_SIZE do
+          val slot = 36 + i
+          if slot < items.size() then
+            val st = items.get(slot)
+            tracking.hotbarItems(i) = if st != null then st.getType else null
+          i += 1
+        if 45 < items.size() then
+          val st = items.get(45)
+          tracking.offhandItem = if st != null then st.getType else null
+        tracking.updateActiveItem()
+        refreshAttackSpeed(player)
+    on(S.PLAYER_POSITION_AND_LOOK): (event, player) =>
+      val w = WrapperPlayServerPlayerPositionAndLook(event)
+      val transId = player.bracketTransaction(event)
+      player.pendingTeleports.add(
+        ShardPlayer.TeleportData(Vector3d(w.getX, w.getY, w.getZ), w.getYaw, w.getPitch, w.getRelativeFlags, transId)
+      )
+    on(S.PLAYER_ROTATION): (event, player) =>
+      val w = WrapperPlayServerPlayerRotation(event)
+      val transId = player.preTransaction(event)
+      val storedPitch =
+        if w.isRelativePitch then w.getPitch
+        else math.max(-90f, math.min(90f, w.getPitch % 360f))
+      player.pendingRotations.add(
+        ShardPlayer.RotationData(w.getYaw, storedPitch, w.isRelativeYaw, w.isRelativePitch, transId)
+      )
+    t
+
   // ---- Packet receive pipeline (exact Shard PacketListener + FlyingProcessor) ----
 
   private def handlePacketReceive(event: PacketReceiveEvent, sp: ShardPlayer): Unit =
@@ -360,7 +750,9 @@ final class ActiveShardCompat(
     if isFlying then sp.tracking.onTickStart()
 
     event.getPacketType match
-      case c: PacketType.Play.Client => routeReceive(c, event, sp)
+      case c: C =>
+        val r = receiveRoutes(c.ordinal)
+        if r != null then r(event, sp)
       case _ => ()
 
     if isFlying then handleFlying(event, sp)
@@ -379,79 +771,6 @@ final class ActiveShardCompat(
     if isFlying then sp.tracking.onTickEnd()
 
     resetFlyingFlags(sp)
-
-  private def routeReceive(c: PacketType.Play.Client, event: PacketReceiveEvent, sp: ShardPlayer): Unit =
-    import PacketType.Play.Client as C
-    c match
-      case C.INTERACT_ENTITY =>
-        val interact = WrapperPlayClientInteractEntity(event)
-        if interact.getAction == WrapperPlayClientInteractEntity.InteractAction.ATTACK then
-          onAttack(interact.getEntityId, sp)
-      case C.ATTACK =>
-        onAttack(WrapperPlayClientAttack(event).getEntityId, sp)
-      case C.PLAYER_BLOCK_PLACEMENT =>
-        onPlacement(event, sp)
-      case C.ANIMATION =>
-        if WrapperPlayClientAnimation(event).getHand == InteractionHand.MAIN_HAND then sp.tracking.onSwing()
-      case C.USE_ITEM =>
-        sp.tracking.ticksSinceUseItem = 0
-      case C.PLAYER_DIGGING =>
-        val dig = WrapperPlayClientPlayerDigging(event)
-        if dig.getAction == DiggingAction.RELEASE_USE_ITEM then
-          sp.tracking.isUsingItem = false
-          sp.tracking.updateActiveItem()
-        if dig.getAction == DiggingAction.SWAP_ITEM_WITH_OFFHAND then
-          sp.tracking.swapOffhand()
-          refreshAttackSpeed(sp)
-      case C.HELD_ITEM_CHANGE =>
-        val tracking = sp.tracking
-        tracking.isUsingItem = false
-        tracking.updateActiveItem()
-        tracking.cooldownTicks = 0
-        tracking.heldSlot = WrapperPlayClientHeldItemChange(event).getSlot
-        tracking.onSlotSwitch()
-        refreshAttackSpeed(sp)
-      case C.ENTITY_ACTION =>
-        val tracking = sp.tracking
-        WrapperPlayClientEntityAction(event).getAction match
-          case WrapperPlayClientEntityAction.Action.START_SPRINTING => tracking.sprinting = true
-          case WrapperPlayClientEntityAction.Action.STOP_SPRINTING => tracking.sprinting = false
-          case WrapperPlayClientEntityAction.Action.START_SNEAKING => tracking.sneaking = true
-          case WrapperPlayClientEntityAction.Action.STOP_SNEAKING => tracking.sneaking = false
-          case WrapperPlayClientEntityAction.Action.START_FLYING_WITH_ELYTRA => tracking.gliding = true
-          case _ => ()
-      case C.PLAYER_ABILITIES =>
-        sp.tracking.flying = WrapperPlayClientPlayerAbilities(event).isFlying
-      case C.PLAYER_INPUT =>
-        val tracking = sp.tracking
-        val input = WrapperPlayClientPlayerInput(event)
-        tracking.inputForward = input.isForward
-        tracking.inputBackward = input.isBackward
-        tracking.inputLeft = input.isLeft
-        tracking.inputRight = input.isRight
-        tracking.inputJump = input.isJump
-        tracking.inputShift = input.isShift
-        tracking.inputSprint = input.isSprint
-        tracking.inputValid = sp.clientVersion.isNewerThanOrEquals(ClientVersion.V_1_21_2)
-        if sp.clientVersion.isNewerThanOrEquals(ClientVersion.V_1_21_6) then
-          tracking.sneaking = input.isShift
-      case C.STEER_VEHICLE =>
-        val tracking = sp.tracking
-        val steer = WrapperPlayClientSteerVehicle(event)
-        tracking.inputForward = steer.getForward > 0f
-        tracking.inputBackward = steer.getForward < 0f
-        tracking.inputLeft = steer.getSideways > 0f
-        tracking.inputRight = steer.getSideways < 0f
-        tracking.inputJump = steer.isJump
-        tracking.inputShift = steer.isUnmount
-        tracking.inputValid = true
-      case C.VEHICLE_MOVE =>
-        if sp.tracking.inVehicle then
-          val pos = WrapperPlayClientVehicleMove(event).getPosition
-          sp.movement.x = pos.getX
-          sp.movement.y = pos.getY
-          sp.movement.z = pos.getZ
-      case _ => ()
 
   private def onAttack(targetId: Int, player: ShardPlayer): Unit =
     if targetId == player.entityId then return
@@ -765,300 +1084,9 @@ final class ActiveShardCompat(
     if sp == null then return
     sp.latencyUtils.flushPending()
     event.getPacketType match
-      case s: PacketType.Play.Server => routeSend(s, event, sp)
-      case _ => ()
-
-  @annotation.nowarn("cat=deprecation")
-  private def routeSend(s: PacketType.Play.Server, event: PacketSendEvent, player: ShardPlayer): Unit =
-    import PacketType.Play.Server as S
-    // PING / WINDOW_CONFIRMATION sends are the host clock's business (Eigen's outbound
-    // listener marks shared pings sent); ShardCompat allocates and marks nothing itself.
-    s match
-      case S.ENTITY_VELOCITY =>
-        val vel = WrapperPlayServerEntityVelocity(event)
-        if vel.getEntityId == player.entityId then
-          val v = vel.getVelocity
-          player.latencyUtils.addRealTimeTask(
-            player.bracketTransaction(event),
-            () => player.tracking.onKnockback(v.getX, v.getY, v.getZ),
-          )
-      case S.EXPLOSION =>
-        val kb = WrapperPlayServerExplosion(event).getPlayerMotion
-        if kb != null && (kb.getX != 0f || kb.getY != 0f || kb.getZ != 0f) then
-          player.latencyUtils.addRealTimeTask(
-            player.bracketTransaction(event),
-            () => {
-              player.tracking.onExplosion(kb.getX, kb.getY, kb.getZ)
-              player.tracking.raiseWindowStart(ShardTickData.START_EXPLOSION_RECEIVED)
-            },
-          )
-      case S.ENTITY_EFFECT =>
-        val eff = WrapperPlayServerEntityEffect(event)
-        if eff.getEntityId == player.entityId then
-          val pt = eff.getPotionType
-          val amp = eff.getEffectAmplifier
-          player.latencyUtils.addRealTimeTask(player.bracketTransaction(event), () => applyPotion(player.tracking, pt, amp))
-      case S.REMOVE_ENTITY_EFFECT =>
-        val rem = WrapperPlayServerRemoveEntityEffect(event)
-        if rem.getEntityId == player.entityId then
-          val pt = rem.getPotionType
-          player.latencyUtils.addRealTimeTask(player.bracketTransaction(event), () => clearPotion(player.tracking, pt))
-      case S.PLAYER_ABILITIES =>
-        val flying = WrapperPlayServerPlayerAbilities(event).isFlying
-        player.latencyUtils.addRealTimeTask(player.bracketTransaction(event), () => player.tracking.flying = flying)
-      case S.UPDATE_HEALTH =>
-        val u = WrapperPlayServerUpdateHealth(event)
-        val food = u.getFood
-        val newHealth = u.getHealth
-        player.latencyUtils.addRealTimeTask(
-          player.bracketTransaction(event),
-          () => {
-            val t = player.tracking
-            val lost = t.health - newHealth
-            if lost > 0f then
-              t.damageTakenThisTick = lost
-              t.ticksSinceDamage = 0
-            t.health = newHealth
-            t.foodLevel = food
-          },
-        )
-      case S.CHANGE_GAME_STATE =>
-        val gs = WrapperPlayServerChangeGameState(event)
-        if gs.getReason == WrapperPlayServerChangeGameState.Reason.CHANGE_GAME_MODE then
-          player.tracking.gameMode = gs.getValue.toInt
-      case S.JOIN_GAME =>
-        val join = WrapperPlayServerJoinGame(event)
-        player.tracking.onSequenceBreak()
-        val gm = join.getGameMode
-        player.entityId = join.getEntityId
-        player.gameMode = gm
-        player.tracking.gameMode = gm.ordinal
-        player.compensatedEntities.clear()
-        player.compensatedWorld.clear()
-        if PacketEvents.getAPI.getServerManager.getVersion.isNewerThanOrEquals(ServerVersion.V_1_17) then
-          try player.compensatedWorld.updateMinHeight(join.getDimensionType.getMinY(player.clientVersion))
-          catch case _: Throwable => ()
-        event.getTasksAfterSend.add(() => player.sendTransaction())
-      case S.RESPAWN =>
-        val respawn = WrapperPlayServerRespawn(event)
-        player.tracking.onSequenceBreak()
-        player.gameMode = respawn.getGameMode
-        player.tracking.gameMode = respawn.getGameMode.ordinal
-        val minY =
-          try Some(respawn.getDimensionType.getMinY(player.clientVersion))
-          catch case _: Throwable => None
-        player.latencyUtils.addRealTimeTask(
-          player.bracketTransaction(event),
-          () => {
-            player.compensatedEntities.clear()
-            player.compensatedWorld.clear()
-            minY.foreach(player.compensatedWorld.updateMinHeight)
-          },
-        )
-      case S.SPAWN_ENTITY =>
-        val sp = WrapperPlayServerSpawnEntity(event)
-        val id = sp.getEntityId
-        if id >= 0 then
-          val uuid = sp.getUUID.orElse(UUID(0L, id.toLong))
-          val tpe = sp.getEntityType
-          val pos = sp.getPosition
-          player.latencyUtils.addRealTimeTask(
-            player.spawnTransaction(id),
-            () => {
-              player.compensatedEntities.addEntity(id, uuid, tpe, pos.getX, pos.getY, pos.getZ)
-              if tpe == EntityTypes.END_CRYSTAL then
-                player.crystalTracker.onCrystalSpawn(id, player.tracking.tickIndex)
-            },
-          )
-      case S.SPAWN_LIVING_ENTITY =>
-        val sp = WrapperPlayServerSpawnLivingEntity(event)
-        val id = sp.getEntityId
-        val uuid = sp.getEntityUUID
-        val tpe = sp.getEntityType
-        val pos = sp.getPosition
-        player.latencyUtils.addRealTimeTask(
-          player.spawnTransaction(id),
-          () => player.compensatedEntities.addEntity(id, uuid, tpe, pos.getX, pos.getY, pos.getZ),
-        )
-      case S.SPAWN_PAINTING =>
-        val sp = WrapperPlayServerSpawnPainting(event)
-        val id = sp.getEntityId
-        val uuid = sp.getUUID
-        player.latencyUtils.addRealTimeTask(
-          player.spawnTransaction(id),
-          () => player.compensatedEntities.addEntity(id, uuid, EntityTypes.PAINTING),
-        )
-      case S.SPAWN_PLAYER =>
-        val sp = WrapperPlayServerSpawnPlayer(event)
-        val id = sp.getEntityId
-        val uuid = sp.getUUID
-        val pos = sp.getPosition
-        player.latencyUtils.addRealTimeTask(
-          player.spawnTransaction(id),
-          () => player.compensatedEntities.addEntity(id, uuid, EntityTypes.PLAYER, pos.getX, pos.getY, pos.getZ),
-        )
-      case S.DESTROY_ENTITIES =>
-        val ids = WrapperPlayServerDestroyEntities(event).getEntityIds
-        ids.foreach(id => player.transactions.noteDespawned(id))
-        val destroyTrans = player.lastSentTransaction()
-        player.latencyUtils.addRealTimeTask(
-          destroyTrans,
-          () => {
-            val self = player.compensatedEntities.self
-            ids.foreach: id =>
-              player.crystalTracker.onEntityRemoved(id)
-              val ent = player.compensatedEntities.getEntity(id)
-              if ent != null then
-                ent.isDead = true
-                if self.riding eq ent then self.eject()
-          },
-        )
-        player.latencyUtils.addRealTimeTask(
-          destroyTrans + 1,
-          () => {
-            ids.foreach: id =>
-              player.compensatedEntities.removeEntity(id)
-              player.compensatedFireworks.removeFirework(id)
-          },
-        )
-      case S.ENTITY_STATUS =>
-        val st = WrapperPlayServerEntityStatus(event)
-        if st.getStatus == 3 then
-          val id = st.getEntityId
-          player.latencyUtils.addRealTimeTask(
-            player.bracketTransaction(event),
-            () => {
-              val ent = player.compensatedEntities.getEntity(id)
-              if ent != null then ent.isDead = true
-            },
-          )
-      case S.UPDATE_ATTRIBUTES =>
-        val attrs = WrapperPlayServerUpdateAttributes(event)
-        val id = attrs.getEntityId
-        val props = attrs.getProperties
-        val trans = if id == player.entityId then player.bracketTransaction(event) else player.lastSentTransaction()
-        player.latencyUtils.addRealTimeTask(trans, () => player.compensatedEntities.updateAttributes(id, props))
-      case S.ENTITY_METADATA =>
-        onMetadata(event, player)
-      case S.ENTITY_RELATIVE_MOVE =>
-        val m = WrapperPlayServerEntityRelativeMove(event)
-        moveEntity(player, m.getEntityId, Vector3d(m.getDeltaX, m.getDeltaY, m.getDeltaZ), relative = true, hasPos = true)
-      case S.ENTITY_RELATIVE_MOVE_AND_ROTATION =>
-        val m = WrapperPlayServerEntityRelativeMoveAndRotation(event)
-        moveEntity(player, m.getEntityId, Vector3d(m.getDeltaX, m.getDeltaY, m.getDeltaZ), relative = true, hasPos = true)
-      case S.ENTITY_TELEPORT =>
-        val tp = WrapperPlayServerEntityTeleport(event)
-        moveEntity(player, tp.getEntityId, tp.getPosition, relative = false, hasPos = true)
-      case S.ENTITY_ROTATION =>
-        val r = WrapperPlayServerEntityRotation(event)
-        moveEntity(player, r.getEntityId, Vector3d(0.0, 0.0, 0.0), relative = true, hasPos = false)
-      case S.ENTITY_POSITION_SYNC =>
-        val sync = WrapperPlayServerEntityPositionSync(event)
-        moveEntity(player, sync.getId, sync.getValues.getPosition, relative = false, hasPos = true)
-      case S.SET_PASSENGERS =>
-        val w = WrapperPlayServerSetPassengers(event)
-        val vehicleId = w.getEntityId
-        val isPassenger = w.getPassengers.contains(player.entityId)
-        player.latencyUtils.addRealTimeTask(
-          player.bracketTransaction(event),
-          () => {
-            val self = player.compensatedEntities.self
-            val vehicle = player.compensatedEntities.getEntity(vehicleId)
-            if vehicle != null then
-              if isPassenger then
-                self.mount(vehicle)
-                player.tracking.inVehicle = true
-              else if self.riding eq vehicle then
-                self.eject()
-                player.tracking.inVehicle = self.riding != null
-          },
-        )
-      case S.ATTACH_ENTITY =>
-        val w = WrapperPlayServerAttachEntity(event)
-        if !w.isLeash && w.getAttachedId == player.entityId then
-          val holdingId = w.getHoldingId
-          player.latencyUtils.addRealTimeTask(
-            player.bracketTransaction(event),
-            () => {
-              val self = player.compensatedEntities.self
-              if holdingId != -1 then
-                val vehicle = player.compensatedEntities.getEntity(holdingId)
-                if vehicle != null then
-                  self.mount(vehicle)
-                  player.tracking.inVehicle = true
-              else if self.riding != null then
-                self.eject()
-                player.tracking.inVehicle = self.riding != null
-            },
-          )
-      case S.CHUNK_DATA =>
-        val col = WrapperPlayServerChunkData(event).getColumn
-        val sections = col.getChunks
-        if sections != null then player.compensatedWorld.onChunkLoad(col.getX, col.getZ, sections)
-      case S.UNLOAD_CHUNK =>
-        val u = WrapperPlayServerUnloadChunk(event)
-        player.compensatedWorld.onChunkUnload(u.getChunkX, u.getChunkZ)
-      case S.BLOCK_CHANGE =>
-        val bc = WrapperPlayServerBlockChange(event)
-        val pos = bc.getBlockPosition
-        val st = bc.getBlockState
-        player.latencyUtils.addRealTimeTask(
-          player.lastSentTransaction(),
-          () => player.compensatedWorld.setBlock(pos.getX, pos.getY, pos.getZ, st),
-        )
-      case S.MULTI_BLOCK_CHANGE =>
-        val mb = WrapperPlayServerMultiBlockChange(event)
-        val ver = PacketEvents.getAPI.getServerManager.getVersion.toClientVersion
-        val changes = mb.getBlocks.map(b => (b.getX, b.getY, b.getZ, b.getBlockState(ver)))
-        player.latencyUtils.addRealTimeTask(
-          player.lastSentTransaction(),
-          () => changes.foreach((x, y, z, st) => player.compensatedWorld.setBlock(x, y, z, st)),
-        )
-      case S.SET_SLOT =>
-        val w = WrapperPlayServerSetSlot(event)
-        if w.getWindowId == 0 then
-          val tracking = player.tracking
-          val hotbarIdx = w.getSlot - 36
-          val itemType = if w.getItem != null then w.getItem.getType else null
-          if w.getSlot == 45 then
-            tracking.offhandItem = itemType
-            tracking.updateActiveItem()
-          else if hotbarIdx >= 0 && hotbarIdx < ShardTrackingState.HOTBAR_SIZE then
-            tracking.hotbarItems(hotbarIdx) = itemType
-            tracking.updateActiveItem()
-            refreshAttackSpeed(player)
-      case S.WINDOW_ITEMS =>
-        val w = WrapperPlayServerWindowItems(event)
-        if w.getWindowId == 0 then
-          val items = w.getItems
-          val tracking = player.tracking
-          var i = 0
-          while i < ShardTrackingState.HOTBAR_SIZE do
-            val slot = 36 + i
-            if slot < items.size() then
-              val st = items.get(slot)
-              tracking.hotbarItems(i) = if st != null then st.getType else null
-            i += 1
-          if 45 < items.size() then
-            val st = items.get(45)
-            tracking.offhandItem = if st != null then st.getType else null
-          tracking.updateActiveItem()
-          refreshAttackSpeed(player)
-      case S.PLAYER_POSITION_AND_LOOK =>
-        val w = WrapperPlayServerPlayerPositionAndLook(event)
-        val transId = player.bracketTransaction(event)
-        player.pendingTeleports.add(
-          ShardPlayer.TeleportData(Vector3d(w.getX, w.getY, w.getZ), w.getYaw, w.getPitch, w.getRelativeFlags, transId)
-        )
-      case S.PLAYER_ROTATION =>
-        val w = WrapperPlayServerPlayerRotation(event)
-        val transId = player.preTransaction()
-        val storedPitch =
-          if w.isRelativePitch then w.getPitch
-          else math.max(-90f, math.min(90f, w.getPitch % 360f))
-        player.pendingRotations.add(
-          ShardPlayer.RotationData(w.getYaw, storedPitch, w.isRelativeYaw, w.isRelativePitch, transId)
-        )
+      case s: S =>
+        val r = sendRoutes(s.ordinal)
+        if r != null then r(event, sp)
       case _ => ()
 
   private def moveEntity(player: ShardPlayer, entityId: Int, delta: Vector3d, relative: Boolean, hasPos: Boolean): Unit =
@@ -1099,12 +1127,6 @@ final class ActiveShardCompat(
     val entityId = meta.getEntityId
     val isSelf = entityId == player.entityId
     val metadata = meta.getEntityMetadata
-    val serverVersion = PacketEvents.getAPI.getServerManager.getVersion
-    val livingFlagsIndex =
-      if serverVersion.isNewerThanOrEquals(ServerVersion.V_1_17) then 8
-      else if serverVersion.isNewerThanOrEquals(ServerVersion.V_1_14) then 7
-      else if serverVersion.isNewerThanOrEquals(ServerVersion.V_1_10) then 6
-      else 5
 
     player.latencyUtils.addRealTimeTask(
       player.lastSentTransaction(),
@@ -1145,23 +1167,18 @@ final class ActiveShardCompat(
                 case i: java.lang.Integer if data.getIndex >= 15 && tpe == EntityTypes.PHANTOM =>
                   entity.phantomSize = i.intValue()
                 case _ => ()
-              if tpe == EntityTypes.FIREWORK_ROCKET then
-                val offset =
-                  if serverVersion.isOlderThanOrEquals(ServerVersion.V_1_12_2) then 2
-                  else if serverVersion.isOlderThanOrEquals(ServerVersion.V_1_16_5) then 1
-                  else 0
-                if data.getIndex == 9 - offset then
-                  val attachedId: Option[Int] = v match
-                    case i: java.lang.Integer => Some(i.intValue())
-                    case opt: Optional[?] =>
-                      if opt.isPresent then
-                        opt.get() match
-                          case i: java.lang.Integer => Some(i.intValue())
-                          case _ => None
-                      else None
-                    case _ => None
-                  if attachedId.contains(player.entityId) then
-                    player.compensatedFireworks.addNewFirework(entityId)
+              if tpe == EntityTypes.FIREWORK_ROCKET && data.getIndex == fireworkAttachedIndex then
+                val attachedId: Option[Int] = v match
+                  case i: java.lang.Integer => Some(i.intValue())
+                  case opt: Optional[?] =>
+                    if opt.isPresent then
+                      opt.get() match
+                        case i: java.lang.Integer => Some(i.intValue())
+                        case _ => None
+                    else None
+                  case _ => None
+                if attachedId.contains(player.entityId) then
+                  player.compensatedFireworks.addNewFirework(entityId)
       },
     )
 

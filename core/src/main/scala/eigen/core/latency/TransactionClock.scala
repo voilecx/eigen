@@ -106,16 +106,33 @@ final class TransactionClock:
   def at(transaction: Int)(task: Runnable): Unit =
     tasks.synchronized(tasks.addLast(Task(transaction, task)))
 
-  /** Runs tasks whose transaction is already answered (receive path only). */
+  /**
+   * Runs every task whose transaction is already answered (receive path only).
+   *
+   * Two listeners (e.g. Eigen and ShardCompat on `ENTITY_RELATIVE_MOVE` or `DESTROY_ENTITIES`)
+   * each schedule a `t` task and a `t + 1` task, producing `[t, t + 1, t, t + 1]`. Scanning the
+   * queue rather than stopping at the first `t + 1` head ensures every `<= done` task runs as
+   * soon as `t` is acknowledged, matching GrimAC and Shard.
+   */
   def runDue(): Unit =
-    val done = received.get
-    while
-      val next = tasks.synchronized {
-        val head = tasks.peekFirst()
-        if head != null && head.transaction <= done then tasks.pollFirst() else null
+    var keepGoing = true
+    while keepGoing do
+      val done = received.get
+      val due = ArrayDeque[Runnable]()
+      tasks.synchronized {
+        val it = tasks.iterator()
+        while it.hasNext do
+          val t = it.next()
+          if t.transaction <= done then
+            due.addLast(t.run)
+            it.remove()
       }
-      next != null && { next.run.run(); true }
-    do ()
+      if due.isEmpty then keepGoing = false
+      else
+        var r = due.pollFirst()
+        while r != null do
+          r.run()
+          r = due.pollFirst()
 
   def clear(): Unit =
     tasks.synchronized(tasks.clear())

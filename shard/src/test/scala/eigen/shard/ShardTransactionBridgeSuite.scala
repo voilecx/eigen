@@ -118,3 +118,15 @@ class ShardTransactionBridgeSuite extends munit.FunSuite:
     assertEquals(bridge.playerPingMillis, 88)
     fake.rtt = 20.2
     assertEquals(bridge.playerPingMillis, 20)
+
+  test("spawnTransaction advances the shared transaction when reusing an entity id despawned at lastSent"):
+    val fake = FakeSource()
+    val bridge = ShardTransactionBridge(() => fake)
+    bridge.sendTransaction()
+    assertEquals(bridge.lastSent(), 1)
+    bridge.noteDespawned(77)
+    // Re-spawning entity 77 while lastSent is still 1 must force a new transaction (2)
+    assertEquals(bridge.spawnTransaction(77), 2)
+    assertEquals(bridge.lastSent(), 2)
+    // Subsequent spawns do not force extra transactions
+    assertEquals(bridge.spawnTransaction(78), 2)

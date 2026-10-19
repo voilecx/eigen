@@ -483,6 +483,15 @@ trait ShardTransactionSource:
   def rttMillis: Double
   /** Sends one host transaction ping; `lastSent` has advanced by the time this returns. */
   def sendTransaction(): Unit
+  /** Schedules a single trailing transaction after `event` is sent (idempotent across listeners). */
+  def sendAfter(event: PacketSendEvent): Unit =
+    if event eq null then sendTransaction()
+    else event.getTasksAfterSend.add(() => sendTransaction())
+  /** Sends one host transaction before `event` (idempotent across listeners on the same `event`). */
+  def preTransaction(event: PacketSendEvent): Int =
+    val _ = event
+    sendTransaction()
+    lastSent
   /** Brackets the packet being sent with host transactions; returns the pre-packet ordinal. */
   def bracket(event: PacketSendEvent): Int
   /** Schedules `task` on the shared clock; it runs on the connection network thread at `transaction`. */
@@ -533,13 +542,24 @@ final class ShardTransactionBridge(sourceProvider: () => ShardTransactionSource 
       s.sendTransaction()
       val _ = lastSent()
 
-  def preTransaction(): Int =
-    sendTransaction()
-    lastSent()
+  def sendAfter(event: PacketSendEvent | Null = null): Unit =
+    val s = source
+    if s == null || event == null then sendTransaction()
+    else s.sendAfter(event)
+
+  def preTransaction(event: PacketSendEvent | Null = null): Int =
+    val s = source
+    if s == null || event == null then
+      sendTransaction()
+      lastSent()
+    else
+      val id = s.preTransaction(event)
+      val _ = noteSent(s.lastSent)
+      id
 
   def bracketTransaction(event: PacketSendEvent): Int =
     val s = source
-    if s == null then preTransaction()
+    if s == null then preTransaction(null)
     else
       val id = s.bracket(event)
       val _ = noteSent(s.lastSent)
@@ -665,11 +685,13 @@ final class ShardPlayer(
 
   def sendTransaction(): Unit = transactions.sendTransaction()
 
+  def sendAfter(event: PacketSendEvent | Null = null): Unit = transactions.sendAfter(event)
+
   def lastSentTransaction(): Int = transactions.lastSent()
 
   def lastReceivedTransaction(): Int = transactions.lastReceived()
 
-  def preTransaction(): Int = transactions.preTransaction()
+  def preTransaction(event: PacketSendEvent | Null = null): Int = transactions.preTransaction(event)
 
   def bracketTransaction(event: PacketSendEvent): Int = transactions.bracketTransaction(event)
 

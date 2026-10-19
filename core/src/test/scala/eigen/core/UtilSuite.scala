@@ -15,8 +15,11 @@
 
 package eigen.core
 
+import scala.collection.mutable.ArrayBuffer
+
 import eigen.core.aim.{AxisEstimator, RunningMode}
 import eigen.core.geom.Angles
+import eigen.core.latency.TransactionClock
 import eigen.core.util.IntMap
 
 class UtilSuite extends munit.FunSuite:
@@ -79,3 +82,37 @@ class UtilSuite extends munit.FunSuite:
     feed(step(0.83), 400)
     assert(est.converged)
     assertEqualsDouble(est.currentStep, step(0.83), 1e-6)
+
+  test("TransactionClock runs all <= done tasks even when two listeners interleave [t, t+1, t, t+1]"):
+    val clock = TransactionClock()
+    val id1 = clock.nextId().toInt
+    val id2 = clock.nextId().toInt
+    clock.onPingSent(id1)
+    clock.onPingSent(id2)
+    assertEquals(clock.lastSent, 2)
+
+    val order = ArrayBuffer.empty[String]
+    // Listener A schedules first and second transaction tasks (e.g. Eigen on ENTITY_RELATIVE_MOVE)
+    clock.at(1)(() => order += "eigen-t1")
+    clock.at(2)(() => order += "eigen-t2")
+    // Listener B schedules first and second transaction tasks (e.g. ShardCompat on ENTITY_RELATIVE_MOVE)
+    clock.at(1)(() => order += "shard-t1")
+    clock.at(2)(() => order += "shard-t2")
+
+    assert(clock.onPong(id1))
+    assertEquals(clock.lastReceived, 1)
+    assertEquals(order.toList, List("eigen-t1", "shard-t1"))
+
+    assert(clock.onPong(id2))
+    assertEquals(clock.lastReceived, 2)
+    assertEquals(order.toList, List("eigen-t1", "shard-t1", "eigen-t2", "shard-t2"))
+
+  test("TransactionClock ignores foreign <= 0 ids (GrimAC) and unanswered ids"):
+    val clock = TransactionClock()
+    clock.onPingSent(0)
+    clock.onPingSent(-1)
+    clock.onPingSent(-32768)
+    assertEquals(clock.lastSent, 0)
+    assert(!clock.onPong(0))
+    assert(!clock.onPong(-1))
+    assert(!clock.onPong(42))
