@@ -73,6 +73,8 @@ trait ShardCompat:
   def enabled: Boolean
   def start(): Unit
   def stop(): Unit
+  /** Wires the host's shared transaction source (Eigen's `TransactionClock` per player). */
+  def bindTransactionSource(lookup: User => ShardTransactionSource | Null): Unit = ()
   def startSession(playerUuid: UUID, playerName: String, label: String, details: String, startedAtMs: Long, eigenDir: Path | Null): Unit
   def stopSession(playerUuid: UUID): Unit
 
@@ -213,6 +215,11 @@ final class ActiveShardCompat(
     log: Logger,
 ) extends ShardCompat:
 
+  @volatile private var transactionHost: User => ShardTransactionSource | Null = _ => null
+
+  override def bindTransactionSource(lookup: User => ShardTransactionSource | Null): Unit =
+    transactionHost = lookup
+
   private val players = ConcurrentHashMap[User, ShardPlayer]()
   private val activeSessions = ConcurrentHashMap[UUID, ShardCollectSession]()
   private val trackers = ConcurrentHashMap[UUID, ShardAttackWindowTracker]()
@@ -314,7 +321,10 @@ final class ActiveShardCompat(
 
   private def handleUserConnect(user: User): Unit =
     if user.getUUID == null || players.containsKey(user) then return
-    players.put(user, new ShardPlayer(user, config.preWindow, config.postWindow, log))
+    val sp = new ShardPlayer(user, config.preWindow, config.postWindow, log)
+    // Resolved lazily: the host EigenPlayer for this user is created alongside this player.
+    sp.transactionSourceProvider = () => transactionHost(user)
+    players.put(user, sp)
 
   private def handleUserLogin(user: User, player: Player): Unit =
     handleUserConnect(user)
@@ -340,7 +350,11 @@ final class ActiveShardCompat(
       handleBrand(sp, event)
       return
 
-    if onTransactionReceive(event, sp) then return
+    // Transaction answers are owned by Eigen's clock (positive ids, consumed and cancelled
+    // in Eigen's inbound listener); `<= 0` answers are foreign and never touched here.
+    // Shared-clock tasks run from that clock on this same network thread.
+    sp.syncPlayerPing()
+    sp.latencyUtils.flushPending()
 
     val isFlying = WrapperPlayClientPlayerFlying.isFlying(event.getPacketType)
     if isFlying then sp.tracking.onTickStart()
@@ -646,6 +660,7 @@ final class ActiveShardCompat(
       movement.lastPitch = movement.pitch
 
   private def onDataTick(player: ShardPlayer): Unit =
+    player.syncPlayerPing()
     val tracking = player.tracking
     if tracking.pendingBufferReset then
       tracking.pendingBufferReset = false
@@ -687,7 +702,7 @@ final class ActiveShardCompat(
   private def acceptTeleport(player: ShardPlayer, flying: WrapperPlayClientPlayerFlying): Boolean =
     if !flying.hasPositionChanged || !flying.hasRotationChanged then return false
     val queue = player.pendingTeleports
-    val received = player.transactions.lastTransactionReceived.get()
+    val received = player.lastReceivedTransaction()
     var head = queue.peek()
     while head != null && received > head.transactionId && !landsOn(player, flying, head) do
       queue.poll()
@@ -712,7 +727,7 @@ final class ActiveShardCompat(
   private def acceptRotation(player: ShardPlayer, flying: WrapperPlayClientPlayerFlying): Boolean =
     if !flying.hasRotationChanged || flying.hasPositionChanged then return false
     val queue = player.pendingRotations
-    val received = player.transactions.lastTransactionReceived.get()
+    val received = player.lastReceivedTransaction()
     var head = queue.peek()
     while head != null && received > head.transactionId && !matchesServerRotation(head, flying) do
       queue.poll()
@@ -725,38 +740,6 @@ final class ActiveShardCompat(
     val loc = flying.getLocation
     (rotation.relativeYaw || loc.getYaw == rotation.yaw) &&
       (rotation.relativePitch || loc.getPitch == rotation.pitch)
-
-  private def onTransactionReceive(event: PacketReceiveEvent, player: ShardPlayer): Boolean =
-    event.getPacketType match
-      case PacketType.Play.Client.WINDOW_CONFIRMATION =>
-        val id = WrapperPlayClientWindowConfirmation(event).getActionId
-        if id <= 0 && acknowledge(player, id) then event.setCancelled(true)
-        true
-      case PacketType.Play.Client.PONG =>
-        val id = WrapperPlayClientPong(event).getId
-        // Only consume negative shorts (our ShardCompat IDs); positive shorts belong to Eigen.
-        if id < 0 && id == id.toShort.toInt && acknowledge(player, id.toShort) then
-          event.setCancelled(true)
-          true
-        else false
-      case _ => false
-
-  private def acknowledge(player: ShardPlayer, id: Short): Boolean =
-    val transactions = player.transactions
-    if !transactions.transactionsSent.stream().anyMatch(_.id == id) then return false
-    var data: ShardTransactionStamp | Null = null
-    while
-      data = transactions.transactionsSent.poll()
-      if data != null then transactions.lastTransactionReceived.incrementAndGet()
-      data != null && data.id != id
-    do ()
-    player.latencyUtils.handleNettySyncTransaction(transactions.lastTransactionReceived.get())
-    transactions.lastTransReceivedTime.set(System.currentTimeMillis())
-    if data != null then
-      val rttMs = math.max(0, ((System.nanoTime() - data.timeNanos) / 1_000_000L).toInt)
-      val prev = player.tracking.playerPing
-      player.tracking.playerPing = if prev == 0 then rttMs else (prev * 4 + rttMs) / 5
-    data != null
 
   private def handleBrand(player: ShardPlayer, event: PacketReceiveEvent): Unit =
     val (ch, data) = event.getPacketType match
@@ -780,6 +763,7 @@ final class ActiveShardCompat(
       return
     val sp = players.get(event.getUser)
     if sp == null then return
+    sp.latencyUtils.flushPending()
     event.getPacketType match
       case s: PacketType.Play.Server => routeSend(s, event, sp)
       case _ => ()
@@ -787,13 +771,9 @@ final class ActiveShardCompat(
   @annotation.nowarn("cat=deprecation")
   private def routeSend(s: PacketType.Play.Server, event: PacketSendEvent, player: ShardPlayer): Unit =
     import PacketType.Play.Server as S
+    // PING / WINDOW_CONFIRMATION sends are the host clock's business (Eigen's outbound
+    // listener marks shared pings sent); ShardCompat allocates and marks nothing itself.
     s match
-      case S.WINDOW_CONFIRMATION =>
-        val id = WrapperPlayServerWindowConfirmation(event).getActionId
-        if id <= 0 then player.transactions.markSent(id)
-      case S.PING =>
-        val id = WrapperPlayServerPing(event).getId
-        if id < 0 && id == id.toShort.toInt then player.transactions.markSent(id.toShort)
       case S.ENTITY_VELOCITY =>
         val vel = WrapperPlayServerEntityVelocity(event)
         if vel.getEntityId == player.entityId then
@@ -919,7 +899,7 @@ final class ActiveShardCompat(
         )
       case S.DESTROY_ENTITIES =>
         val ids = WrapperPlayServerDestroyEntities(event).getEntityIds
-        ids.foreach(id => player.transactions.entitiesDespawnedThisTransaction.add(id))
+        ids.foreach(id => player.transactions.noteDespawned(id))
         val destroyTrans = player.lastSentTransaction()
         player.latencyUtils.addRealTimeTask(
           destroyTrans,

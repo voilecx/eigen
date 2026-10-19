@@ -54,6 +54,7 @@ final class Eigen(
     stream.onVerdict = alerts.onVerdict
     garnet.start(alerts.onRemoteAlert)
     stream.start()
+    shardCompat.bindTransactionSource(user => { val p = players.get(user); if p == null then null else p.shardTransactions })
     shardCompat.start()
     val events = PacketEvents.getAPI.getEventManager
     events.registerListener(inbound)

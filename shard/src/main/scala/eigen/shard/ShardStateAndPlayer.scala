@@ -22,21 +22,18 @@
 
 package eigen.shard
 
-import java.util.{ArrayDeque, ArrayList, Queue, UUID}
+import java.util.{ArrayDeque, Queue, UUID}
 import java.util.{HashMap as JHashMap, HashSet as JHashSet}
-import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue}
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 import java.util.logging.{Level, Logger}
 
-import com.github.retrooper.packetevents.PacketEvents
 import com.github.retrooper.packetevents.event.PacketSendEvent
-import com.github.retrooper.packetevents.manager.server.ServerVersion
 import com.github.retrooper.packetevents.protocol.ConnectionState
 import com.github.retrooper.packetevents.protocol.item.`type`.{ItemType, ItemTypes}
 import com.github.retrooper.packetevents.protocol.player.{ClientVersion, GameMode, User}
 import com.github.retrooper.packetevents.protocol.teleport.RelativeFlag
 import com.github.retrooper.packetevents.util.Vector3d
-import com.github.retrooper.packetevents.wrapper.play.server.{WrapperPlayServerPing, WrapperPlayServerWindowConfirmation}
 import org.bukkit.entity.Player
 
 final class ShardPacketStateData:
@@ -469,74 +466,139 @@ object ShardTrackingState:
   private inline val FLOOD_TICK_COST_MS = 50.0
   private inline val FLOOD_BURST_MS = 1000.0
 
-final case class ShardTransactionStamp(id: Short, timeNanos: Long)
+/**
+ * The host's single transaction source, shared with Eigen.
+ *
+ * Implemented in the Paper adapter by `EigenPlayer`: every method delegates to that player's
+ * positive `eigen.core.latency.TransactionClock` and to `EigenPlayer.sendTransaction` /
+ * `bracket`, so sending a ping synchronously advances `lastSent` through Eigen's outbound
+ * listener exactly as Eigen's own sends do. ShardCompat never allocates, sends, consumes or
+ * cancels a transaction id of its own; ids `<= 0` stay entirely foreign (GrimAC/other plugins).
+ */
+trait ShardTransactionSource:
+  /** Shared sent/received ordinals (counts, not wire ids). */
+  def lastSent: Int
+  def lastReceived: Int
+  /** Host-smoothed transaction round-trip time in milliseconds (0 until the first answer). */
+  def rttMillis: Double
+  /** Sends one host transaction ping; `lastSent` has advanced by the time this returns. */
+  def sendTransaction(): Unit
+  /** Brackets the packet being sent with host transactions; returns the pre-packet ordinal. */
+  def bracket(event: PacketSendEvent): Int
+  /** Schedules `task` on the shared clock; it runs on the connection network thread at `transaction`. */
+  def schedule(transaction: Int, task: Runnable): Unit
 
-final class ShardTransactionTracker:
-  val transactionsSent: Queue[ShardTransactionStamp] = ConcurrentLinkedQueue()
-  val didWeSendThatTrans: java.util.Set[java.lang.Short] = ConcurrentHashMap.newKeySet[java.lang.Short]()
-  val lastTransactionSent: AtomicInteger = AtomicInteger(0)
-  val lastTransactionReceived: AtomicInteger = AtomicInteger(0)
-  val lastTransSentTime: AtomicLong = AtomicLong(System.currentTimeMillis())
-  val lastTransReceivedTime: AtomicLong = AtomicLong(System.currentTimeMillis())
-  val entitiesDespawnedThisTransaction: JHashSet[java.lang.Integer] = JHashSet()
-  private val transactionIdCounter: AtomicInteger = AtomicInteger(0)
+/**
+ * Shard-side view of the shared clock: ordinal reads, keepalive and despawn bookkeeping.
+ * Holds no wire ids and no send/ack state of its own; the last-seen ordinals are only a
+ * cache for the moments before the host player exists.
+ */
+final class ShardTransactionBridge(sourceProvider: () => ShardTransactionSource | Null):
+  private val despawned: JHashSet[java.lang.Integer] = JHashSet()
+  private var despawnedAtSent: Int = 0
+  private val lastSentSeen: AtomicInteger = AtomicInteger(0)
+  private val lastReceivedSeen: AtomicInteger = AtomicInteger(0)
+  private val lastSentSeenAtMs: AtomicLong = AtomicLong(System.currentTimeMillis())
 
-  def sendTransaction(user: User | Null): Unit =
+  def source: ShardTransactionSource | Null = sourceProvider()
+
+  private def noteSent(value: Int): Int =
+    if value != lastSentSeen.get() then
+      lastSentSeen.set(value)
+      lastSentSeenAtMs.set(System.currentTimeMillis())
+    value
+
+  def lastSent(): Int =
+    val s = source
+    if s == null then lastSentSeen.get() else noteSent(s.lastSent)
+
+  def lastReceived(): Int =
+    val s = source
+    if s == null then lastReceivedSeen.get()
+    else
+      val value = s.lastReceived
+      lastReceivedSeen.set(value)
+      value
+
+  def rttMillis: Double =
+    val s = source
+    if s == null then 0.0 else s.rttMillis
+
+  /** Shared RTT as the integer milliseconds written to Shard's `player_ping` column. */
+  def playerPingMillis: Int = math.round(rttMillis).toInt
+
+  def sendTransaction(): Unit =
+    val s = source
+    if s != null then
+      s.sendTransaction()
+      val _ = lastSent()
+
+  def preTransaction(): Int =
+    sendTransaction()
+    lastSent()
+
+  def bracketTransaction(event: PacketSendEvent): Int =
+    val s = source
+    if s == null then preTransaction()
+    else
+      val id = s.bracket(event)
+      val _ = noteSent(s.lastSent)
+      id
+
+  /** Delegates to the shared clock; false when the host is not bound yet (caller queues). */
+  def schedule(transaction: Int, task: Runnable): Boolean =
+    val s = source
+    if s == null then false
+    else
+      s.schedule(transaction, task)
+      true
+
+  def noteDespawned(entityId: Int): Unit = despawned.synchronized {
+    despawned.add(entityId)
+    despawnedAtSent = lastSent()
+  }
+
+  /** Ordinal for a spawn: forces a fresh shared transaction if this entity was despawned at it. */
+  def spawnTransaction(entityId: Int): Int =
+    val (isDespawned, atSent) = despawned.synchronized((despawned.contains(entityId), despawnedAtSent))
+    if isDespawned then
+      if lastSent() <= atSent then sendTransaction()
+      despawned.synchronized(despawned.clear())
+    lastSent()
+
+  /** Sends a shared keepalive only when no host transaction has been sent recently. */
+  def pollKeepalive(user: User | Null): Unit =
     if user == null || user.getEncoderState != ConnectionState.PLAY then return
-    val raw = transactionIdCounter.getAndIncrement() & 0x7fff
-    val modern = ShardTransactionTracker.isModernServer
-    // Use negative short IDs in Shard compatibility mode so Shard's transaction pings never
-    // collide with Eigen's positive-short transaction pings on the same Netty channel!
-    val transactionId = (-1 * (if raw == 0 then 0x7fff else raw)).toShort
-    didWeSendThatTrans.add(transactionId)
+    if source == null then return
+    val _ = lastSent()
+    if System.currentTimeMillis() - lastSentSeenAtMs.get() > ShardPlayer.TRANSACTION_KEEPALIVE_MS then sendTransaction()
 
-    if modern then user.sendPacket(WrapperPlayServerPing(transactionId.toInt))
-    else user.sendPacket(WrapperPlayServerWindowConfirmation(0, transactionId, false))
-    lastTransSentTime.set(System.currentTimeMillis())
-
-  def markSent(id: Short): Unit =
-    if !didWeSendThatTrans.remove(id) then return
-    entitiesDespawnedThisTransaction.clear()
-    transactionsSent.add(ShardTransactionStamp(id, System.nanoTime()))
-    lastTransactionSent.getAndIncrement()
-
-object ShardTransactionTracker:
-  lazy val isModernServer: Boolean =
-    try PacketEvents.getAPI.getServerManager.getVersion.isNewerThanOrEquals(ServerVersion.V_1_17)
-    catch case _: Throwable => true
-
-final class ShardLatencyUtils(private val player: ShardPlayer, private val logger: Logger):
+final class ShardLatencyUtils(private val transactions: ShardTransactionBridge, private val playerName: String, private val logger: Logger):
   private final case class TransactionTask(transactionId: Int, task: Runnable)
-  private val transactionMap: ArrayDeque[TransactionTask] = ArrayDeque()
+  private val pending: ArrayDeque[TransactionTask] = ArrayDeque()
 
+  /**
+   * Schedules on the shared clock. The task therefore runs on the connection network thread
+   * (from the host clock's pong/drain path) once the client answers `transaction`, never on
+   * the sending thread. Tasks queued before the host player exists are transferred, in
+   * order, as soon as it is bound.
+   */
   def addRealTimeTask(transaction: Int, runnable: Runnable): Unit =
-    if player.transactions.lastTransactionReceived.get() >= transaction then
-      runnable.run()
-      return
-    transactionMap.synchronized {
-      transactionMap.add(TransactionTask(transaction, runnable))
-    }
-
-  def handleNettySyncTransaction(receivedTransactionId: Int): Unit =
-    val tasksToRun = ArrayList[Runnable]()
-    transactionMap.synchronized {
-      val iter = transactionMap.iterator()
-      var stop = false
-      while iter.hasNext && !stop do
-        val taskEntry = iter.next()
-        val taskTransactionId = taskEntry.transactionId
-        if receivedTransactionId + 1 < taskTransactionId then stop = true
-        else if receivedTransactionId == taskTransactionId - 1 then ()
-        else
-          tasksToRun.add(taskEntry.task)
-          iter.remove()
-    }
-    val iter = tasksToRun.iterator()
-    while iter.hasNext do
-      try iter.next().run()
+    val task: Runnable = () =>
+      try runnable.run()
       catch
         case ex: Exception =>
-          logger.log(Level.SEVERE, s"An error occurred when running Shard transactions for player: ${player.name}", ex)
+          logger.log(Level.SEVERE, s"An error occurred when running Shard transactions for player: $playerName", ex)
+    flushPending()
+    if !transactions.schedule(transaction, task) then pending.synchronized(pending.add(TransactionTask(transaction, task)))
+
+  /** Moves tasks queued before the host was bound onto the shared clock, preserving order. */
+  def flushPending(): Unit = pending.synchronized {
+    var head = pending.peek()
+    while head != null && transactions.schedule(head.transactionId, head.task) do
+      pending.poll()
+      head = pending.peek()
+  }
 
 final class ShardPlayer(
     val user: User | Null,
@@ -566,10 +628,10 @@ final class ShardPlayer(
   @volatile var attachedPlayer: Player | Null = null
   def isAttached: Boolean = attachedPlayer != null
 
+  /** Lazily resolves the host Eigen player's shared clock; bound by the Paper adapter. */
+  @volatile var transactionSourceProvider: () => ShardTransactionSource | Null = () => null
+
   def attach(bukkitPlayer: Player): Unit =
-    val now = System.currentTimeMillis()
-    transactions.lastTransSentTime.set(now)
-    transactions.lastTransReceivedTime.set(now)
     attachedPlayer = bukkitPlayer
 
   val packetStateData: ShardPacketStateData = ShardPacketStateData()
@@ -584,7 +646,7 @@ final class ShardPlayer(
   val movement: ShardMovementState = ShardMovementState()
   val combat: ShardCombatState = ShardCombatState()
   val tracking: ShardTrackingState = ShardTrackingState()
-  val transactions: ShardTransactionTracker = ShardTransactionTracker()
+  val transactions: ShardTransactionBridge = ShardTransactionBridge(() => transactionSourceProvider())
 
   @volatile var tickBuffer: ShardTickBuffer = ShardTickBuffer(requiredBufferCapacity())
 
@@ -595,35 +657,34 @@ final class ShardPlayer(
   val compensatedEntities: ShardCompensatedEntities = ShardCompensatedEntities(this)
   val compensatedFireworks: ShardCompensatedFireworks = ShardCompensatedFireworks()
   val compensatedWorld: ShardCompensatedWorld = ShardCompensatedWorld(this)
-  val latencyUtils: ShardLatencyUtils = ShardLatencyUtils(this, logger)
+  val latencyUtils: ShardLatencyUtils = ShardLatencyUtils(transactions, name, logger)
   val aim: ShardAimProcessor = ShardAimProcessor()
 
   def isPointThree(): Boolean = clientVersion.isOlderThan(ClientVersion.V_1_18_2)
   def getMovementThreshold(): Double = if isPointThree() then 0.03 else 0.0002
 
-  def sendTransaction(): Unit = transactions.sendTransaction(user)
+  def sendTransaction(): Unit = transactions.sendTransaction()
 
-  def lastSentTransaction(): Int = transactions.lastTransactionSent.get()
+  def lastSentTransaction(): Int = transactions.lastSent()
 
-  def preTransaction(): Int =
-    sendTransaction()
-    lastSentTransaction()
+  def lastReceivedTransaction(): Int = transactions.lastReceived()
 
-  def bracketTransaction(event: PacketSendEvent): Int =
-    val id = preTransaction()
-    event.getTasksAfterSend.add(() => sendTransaction())
-    id
+  def preTransaction(): Int = transactions.preTransaction()
 
-  def spawnTransaction(entityId: Int): Int =
-    if transactions.entitiesDespawnedThisTransaction.contains(entityId) then sendTransaction()
-    lastSentTransaction()
+  def bracketTransaction(event: PacketSendEvent): Int = transactions.bracketTransaction(event)
 
-  def pollData(): Unit =
-    val now = System.currentTimeMillis()
-    if user == null || user.getEncoderState != ConnectionState.PLAY then
-      transactions.lastTransReceivedTime.set(now)
-      return
-    if now - transactions.lastTransSentTime.get() > TRANSACTION_KEEPALIVE_MS then sendTransaction()
+  def spawnTransaction(entityId: Int): Int = transactions.spawnTransaction(entityId)
+
+  /**
+   * Maintains `player_ping` from the shared clock. Smoothing differs from legacy Shard:
+   * the value is now Eigen's double EMA (weight 0.125 per answered transaction, shared with
+   * Eigen's `ping_bucket`) instead of Shard's private integer `(4*prev + sample) / 5`
+   * over its own negative-id pings. Same wire column, same millisecond unit.
+   */
+  def syncPlayerPing(): Unit =
+    if transactions.source != null then tracking.playerPing = transactions.playerPingMillis
+
+  def pollData(): Unit = transactions.pollKeepalive(user)
 
   def ensureTickBufferCapacity(): Unit =
     val required = requiredBufferCapacity()

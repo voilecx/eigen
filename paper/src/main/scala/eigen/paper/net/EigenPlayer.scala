@@ -37,6 +37,7 @@ import eigen.core.latency.TransactionClock
 import eigen.core.sim.{PlayerSim, SimConfig}
 import eigen.core.util.IntMap
 import eigen.paper.collect.CollectSession
+import eigen.shard.ShardTransactionSource
 
 /** Adapter-side facts about a tracked entity that the core simulation does not need. */
 final class EntityMeta(val tpe: EntityType):
@@ -60,6 +61,20 @@ final class EigenPlayer(
 ):
   val clock = TransactionClock()
   val sim = PlayerSim(profile, config, w => windows(this, w))
+
+  /**
+   * ShardCompat's view of this player's clock: the single transaction source for both.
+   * Sends go through [[sendTransaction]]/[[bracket]] so `lastSent` advances synchronously
+   * via the outbound listener, exactly as for Eigen's own brackets.
+   */
+  // Lazy so the disabled-by-default ShardCompat costs nothing per player until bound.
+  lazy val shardTransactions: ShardTransactionSource = new ShardTransactionSource:
+    def lastSent: Int = clock.lastSent
+    def lastReceived: Int = clock.lastReceived
+    def rttMillis: Double = clock.rtt
+    def sendTransaction(): Unit = EigenPlayer.this.sendTransaction()
+    def bracket(event: PacketSendEvent): Int = EigenPlayer.this.bracket(event)
+    def schedule(transaction: Int, task: Runnable): Unit = clock.at(transaction)(task)
   val entityMeta = IntMap[EntityMeta](64)
 
   /** Collection session in progress; set and cleared on the network thread only. */
