@@ -192,3 +192,18 @@ class SimSuite extends munit.FunSuite:
     legacy.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
     legacy.onTickEnd()
     assertEquals(legacy.history(Schema.Reasons, legacy.history.nextSeq - 1).toInt & Reason.NoMoveTick, 0)
+
+  test("rows of clients without PLAYER_INPUT carry the LegacyInput reason"):
+    // Inferred inputs are an observation marker, not a validity mask: the values stay
+    // usable and the model decides how to weigh them (the exact keys remain unmasked).
+    assertEquals((Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.LegacyInput, 0)
+
+    val legacy = PlayerSim(ClientProfile.Modern.copy(tickEnd = false, realInput = false), SimConfig(), _ => ())
+    legacy.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
+    assertNotEquals(legacy.history(Schema.Reasons, legacy.history.nextSeq - 1).toInt & Reason.LegacyInput, 0)
+
+    val modern = PlayerSim(ClientProfile.Modern, SimConfig(), _ => ())
+    modern.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
+    modern.onInput(true, false, false, false, false, false, false)
+    modern.onTickEnd()
+    assertEquals(modern.history(Schema.Reasons, modern.history.nextSeq - 1).toInt & Reason.LegacyInput, 0)
