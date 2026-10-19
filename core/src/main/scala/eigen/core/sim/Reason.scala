@@ -35,6 +35,11 @@ object Reason:
   /** Movement keys were inferred from motion (client older than 1.21.2), not reported. */
   inline val LegacyInput = 1 << 12
   inline val Discontinuity = 1 << 13
+  /** 1.21.2+ only: the tick was closed by `CLIENT_TICK_END` with no movement packet, so a
+    * client without tick-end packets would not have produced this row. An observation marker,
+    * deliberately outside the validity masks: training can filter on it to compare client
+    * versions on equal terms. */
+  inline val NoMoveTick = 1 << 14
 
   inline val MasksRot = Teleport | ServerRotation | Uncalibrated | Gui | Vehicle | Gliding | Riptide | Idle | Discontinuity
   inline val MasksInp = Teleport | Gui | Vehicle | Gliding | Riptide | Knockback | Idle | Water

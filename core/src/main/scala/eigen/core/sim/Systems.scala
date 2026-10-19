@@ -304,6 +304,7 @@ object RecordSystem extends TickSystem:
     if b.swimming || b.inWater then reasons |= Reason.Water
     if !s.profile.realInput then reasons |= Reason.LegacyInput
     if r.discontinuity then reasons |= Reason.Discontinuity
+    if !s.flyingThisTick then reasons |= Reason.NoMoveTick
     reasons
 
   /** What the player was doing this tick, as a set of `ActivityBit` bits. */

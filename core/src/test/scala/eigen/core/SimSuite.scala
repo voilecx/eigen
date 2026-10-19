@@ -172,3 +172,23 @@ class SimSuite extends munit.FunSuite:
     assertEquals(calm.size, 1)
     assertEquals(calm.head.rows, 40)
     assertEquals(calm.head.engagement, 3)
+
+  test("a tick closed only by CLIENT_TICK_END carries the NoMoveTick observation marker"):
+    // The marker never participates in any validity mask.
+    assertEquals(
+      (Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.NoMoveTick,
+      0,
+    )
+    val h = Harness()
+    h.sim.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
+    h.sim.onTickEnd()
+    h.sim.onTickEnd()
+    val hist = h.sim.history
+    assertEquals(hist(Schema.Reasons, hist.nextSeq - 2).toInt & Reason.NoMoveTick, 0)
+    assertNotEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.NoMoveTick, 0)
+
+    // Without tick-end packets the row only exists because a movement packet closed the tick.
+    val legacy = PlayerSim(ClientProfile.Modern.copy(tickEnd = false, realInput = false), SimConfig(), _ => ())
+    legacy.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
+    legacy.onTickEnd()
+    assertEquals(legacy.history(Schema.Reasons, legacy.history.nextSeq - 1).toInt & Reason.NoMoveTick, 0)

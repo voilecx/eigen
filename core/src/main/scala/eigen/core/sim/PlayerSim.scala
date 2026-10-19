@@ -74,6 +74,9 @@ final class PlayerSim(val profile: ClientProfile, val config: SimConfig, emit: W
   private[sim] val boxC = Box()
   private[sim] val pair = new Array[Double](3)
 
+  /** Whether this tick has seen a (non-duplicate) movement packet; read by `RecordSystem`. */
+  private[sim] var flyingThisTick = false
+
   // ---- client → server events -------------------------------------------------------------
 
   /**
@@ -100,6 +103,7 @@ final class PlayerSim(val profile: ClientProfile, val config: SimConfig, emit: W
       if hasRot then rotate(yaw, pitch)
 
     body.onGround = onGround
+    if !duplicate then flyingThisTick = true
     if !profile.tickEnd && !duplicate then endTick()
 
   /** `CLIENT_TICK_END` (1.21.2+). */
@@ -187,6 +191,7 @@ final class PlayerSim(val profile: ClientProfile, val config: SimConfig, emit: W
 
   def endTick(): Unit =
     Schedule.run(this)
+    flyingThisTick = false
     tick += 1
 
   private[sim] inline def emitWindow(w: Window): Unit = emit(w)
