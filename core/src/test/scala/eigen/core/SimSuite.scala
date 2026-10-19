@@ -21,7 +21,7 @@ import eigen.core.entity.{ClientProfile, EntityKind, TrackedEntity}
 import eigen.core.history.{Window, WindowKind}
 import eigen.core.latency.TransactionClock
 import eigen.core.schema.Schema
-import eigen.core.sim.{Handoff, PlayerSim, Reason, RotationSystem, SimConfig, WindowSystem}
+import eigen.core.sim.{Handoff, ItemKind, PlayerSim, Reason, RotationSystem, SimConfig, WindowSystem}
 
 class SimSuite extends munit.FunSuite:
 
@@ -83,7 +83,7 @@ class SimSuite extends munit.FunSuite:
     val maskTgt = Schema.Combat.cols.indexOf(Schema.MaskTgt)
     assertEquals(w.data(maskTgt)(w.anchor), 1f, "target geometry valid at the hit")
     val reasons = Schema.Combat.cols.indexOf(Schema.Reasons)
-    assertEquals(w.data(reasons)(w.anchor).toInt & Reason.Uncalibrated, 0)
+    assert(!Reason.fromRaw(w.data(reasons)(w.anchor).toInt).contains(Reason.Uncalibrated))
 
     val engage = h.windows.filter(_.kind == WindowKind.Engage)
     assertEquals(engage.size, 1)
@@ -180,47 +180,57 @@ class SimSuite extends munit.FunSuite:
     // The marker never participates in any validity mask.
     assertEquals(
       (Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.NoMoveTick,
-      0,
+      Reason.None,
     )
     val h = Harness()
     h.sim.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
     h.sim.onTickEnd()
     h.sim.onTickEnd()
     val hist = h.sim.history
-    assertEquals(hist(Schema.Reasons, hist.nextSeq - 2).toInt & Reason.NoMoveTick, 0)
-    assertNotEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.NoMoveTick, 0)
+    assert(!Reason.fromRaw(hist(Schema.Reasons, hist.nextSeq - 2).toInt).contains(Reason.NoMoveTick))
+    assert(Reason.fromRaw(hist(Schema.Reasons, hist.nextSeq - 1).toInt).contains(Reason.NoMoveTick))
 
     // Without tick-end packets the row only exists because a movement packet closed the tick.
     val legacy = PlayerSim(ClientProfile.Modern.copy(tickEnd = false, realInput = false), SimConfig(), _ => ())
     legacy.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
     legacy.onTickEnd()
-    assertEquals(legacy.history(Schema.Reasons, legacy.history.nextSeq - 1).toInt & Reason.NoMoveTick, 0)
+    assert(!Reason.fromRaw(legacy.history(Schema.Reasons, legacy.history.nextSeq - 1).toInt).contains(Reason.NoMoveTick))
 
   test("rows of clients without PLAYER_INPUT carry the LegacyInput reason"):
     // Inferred inputs are an observation marker, not a validity mask: the values stay
     // usable and the model decides how to weigh them (the exact keys remain unmasked).
-    assertEquals((Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.LegacyInput, 0)
+    assertEquals((Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.LegacyInput, Reason.None)
 
     val legacy = PlayerSim(ClientProfile.Modern.copy(tickEnd = false, realInput = false), SimConfig(), _ => ())
     legacy.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
-    assertNotEquals(legacy.history(Schema.Reasons, legacy.history.nextSeq - 1).toInt & Reason.LegacyInput, 0)
+    assert(Reason.fromRaw(legacy.history(Schema.Reasons, legacy.history.nextSeq - 1).toInt).contains(Reason.LegacyInput))
 
     val modern = PlayerSim(ClientProfile.Modern, SimConfig(), _ => ())
     modern.onFlying(hasPos = true, 0, 64, 0, hasRot = true, 0.5f, 0f, onGround = true)
     modern.onInput(true, false, false, false, false, false, false)
     modern.onTickEnd()
-    assertEquals(modern.history(Schema.Reasons, modern.history.nextSeq - 1).toInt & Reason.LegacyInput, 0)
+    assert(!Reason.fromRaw(modern.history(Schema.Reasons, modern.history.nextSeq - 1).toInt).contains(Reason.LegacyInput))
 
   test("the Attack reason marks attack input even without a matched target"):
-    assertEquals((Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.Attack, 0)
+    assertEquals((Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.Attack, Reason.None)
     val h = Harness()
     h.tick(attack = 7) // no entity 7 spawned: the attack column stays 0, the input bit is set
     val hist = h.sim.history
     assertEquals(hist(Schema.Attack, hist.nextSeq - 1), 0f)
-    assertEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.Attack, Reason.Attack)
+    assert(Reason.fromRaw(hist(Schema.Reasons, hist.nextSeq - 1).toInt).contains(Reason.Attack))
     h.tick()
-    assertEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.Attack, 0)
+    assert(!Reason.fromRaw(hist(Schema.Reasons, hist.nextSeq - 1).toInt).contains(Reason.Attack))
     h.spawnTarget(7, 2.5)
     h.tick(attack = 7)
     assertEquals(hist(Schema.Attack, hist.nextSeq - 1), 1f)
-    assertEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.Attack, Reason.Attack)
+    assert(Reason.fromRaw(hist(Schema.Reasons, hist.nextSeq - 1).toInt).contains(Reason.Attack))
+
+  test("ItemKind classifies namespaced item ids via suffix and exact match"):
+    assertEquals(ItemKind.of("minecraft:air"), ItemKind.Empty)
+    assertEquals(ItemKind.of("minecraft:netherite_sword"), ItemKind.Sword)
+    assertEquals(ItemKind.of("minecraft:diamond_axe"), ItemKind.Axe)
+    assertEquals(ItemKind.of("minecraft:iron_spear"), ItemKind.Spear)
+    assertEquals(ItemKind.of("minecraft:mace"), ItemKind.Mace)
+    assertEquals(ItemKind.of("minecraft:totem_of_undying"), ItemKind.Totem)
+    assertEquals(ItemKind.of("minecraft:enchanted_golden_apple"), ItemKind.Food)
+    assertEquals(ItemKind.of("minecraft:ender_pearl"), ItemKind.Other)

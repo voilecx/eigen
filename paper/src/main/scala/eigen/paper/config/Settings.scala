@@ -76,7 +76,7 @@ object Settings:
     yield BackendSettings(enabled, url, token, resendMb.toLong * 1024 * 1024)
 
   private val sinkSchema: Read[CollectSink] =
-    Read.choice("sink", "server")("server" -> CollectSink.Server, "local" -> CollectSink.Local, "both" -> CollectSink.Both)
+    Read.enumChoice("sink", CollectSink.Server, CollectSink.values)
 
   private val collectSchema: Read[(CollectSink, Boolean, ShardCompatConfig)] =
     for
@@ -91,8 +91,7 @@ object Settings:
     for
       enabled <- Read.bool("enabled", default = false)
       uri <- Read.key("uri", DefaultGarnetUri)(garnetUri)
-      server <- Read.text("server", "default").map(_.trim)
-      _ <- Read.ensure(server.nonEmpty, "server", "must not be empty")
+      server <- Read.text("server", "default").map(_.trim).filterOrElse("server", "must not be empty")(_.nonEmpty)
       ttl <- Read.int("ttl-seconds", default = 600, min = 10)
     yield GarnetSettings(enabled, uri, server, ttl)
 
@@ -156,31 +155,28 @@ object Settings:
       val (sink, autoLegit, shardCompat) = collect
       Settings(backend, salt, sink, autoLegit, shardCompat, garnet, detection.sim, detection.exemptBedrock, threshold)
 
-  /** A Garnet/Redis endpoint: `redis://` or `rediss://`. */
-  private def garnetUri(raw: Any): Either[String, URI] = raw match
+  /** Parses a text configuration value into a [[URI]] and runs scheme/host validation `check`. */
+  private def parseUri(check: (String, URI) => Either[String, URI])(raw: Any): Either[String, URI] = raw match
     case text: String =>
-      try
-        val uri = URI(text)
-        uri.getScheme match
-          case "redis" | "rediss" if uri.getHost != null && uri.getHost.nonEmpty => Right(uri)
-          case "redis" | "rediss" => Left(s"missing host in '$text'")
-          case _ => Left(s"must be redis:// or rediss://, got '$text'")
+      try check(text, URI(text))
       catch case e: IllegalArgumentException => Left(s"not a URI: ${e.getMessage}")
     case other => Left(s"must be text, got ${other.getClass.getSimpleName}")
 
+  /** A Garnet/Redis endpoint: `redis://` or `rediss://`. */
+  private val garnetUri: Any => Either[String, URI] = parseUri: (text, uri) =>
+    uri.getScheme match
+      case "redis" | "rediss" if uri.getHost != null && uri.getHost.nonEmpty => Right(uri)
+      case "redis" | "rediss" => Left(s"missing host in '$text'")
+      case _ => Left(s"must be redis:// or rediss://, got '$text'")
+
   /** A backend endpoint: `wss://` anywhere, `ws://` only for loopback development. */
-  private def endpoint(raw: Any): Either[String, URI] = raw match
-    case text: String =>
-      try
-        val uri = URI(text)
-        val loopback = uri.getHost != null && LoopbackHosts.contains(uri.getHost)
-        uri.getScheme match
-          case "wss" => Right(uri)
-          case "ws" if loopback => Right(uri)
-          case "ws" => Left("plaintext ws:// is allowed only for loopback hosts; use wss://")
-          case _ => Left(s"must be ws:// or wss://, got '$text'")
-      catch case e: IllegalArgumentException => Left(s"not a URI: ${e.getMessage}")
-    case other => Left(s"must be text, got ${other.getClass.getSimpleName}")
+  private val endpoint: Any => Either[String, URI] = parseUri: (text, uri) =>
+    val loopback = uri.getHost != null && LoopbackHosts.contains(uri.getHost)
+    uri.getScheme match
+      case "wss" => Right(uri)
+      case "ws" if loopback => Right(uri)
+      case "ws" => Left("plaintext ws:// is allowed only for loopback hosts; use wss://")
+      case _ => Left(s"must be ws:// or wss://, got '$text'")
 
   /** The privacy salt, hex-encoded. The plugin writes one on first start. */
   private def hexSalt(raw: Any): Either[String, Array[Byte]] = raw match

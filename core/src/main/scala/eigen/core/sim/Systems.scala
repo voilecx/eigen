@@ -269,9 +269,9 @@ object RecordSystem extends TickSystem:
     h(SprintHit) = attackOnTarget && cl.sprintAtAttack
     h(SameTarget) = attackOnTarget && cl.prevAttackTarget == cl.attackTarget
 
-    h(MaskRot) = (reasons & Reason.MasksRot) == 0
-    h(MaskInp) = (reasons & Reason.MasksInp) == 0
-    h(MaskTgt) = (reasons & Reason.MasksTgt) == 0
+    h(MaskRot) = reasons.disjointFrom(Reason.MasksRot)
+    h(MaskInp) = reasons.disjointFrom(Reason.MasksInp)
+    h(MaskTgt) = reasons.disjointFrom(Reason.MasksTgt)
 
     h(Reasons) = reasons.toFloat
     h(Gate) = c.gate
@@ -284,39 +284,35 @@ object RecordSystem extends TickSystem:
     h.commit(s.tick, s.epoch)
 
   /** Why this tick's streams are masked, as a set of `Reason` bits. */
-  private def reasonsOf(s: PlayerSim): Int =
+  private def reasonsOf(s: PlayerSim): Reason.Reason =
     val r = s.rotation
     val b = s.body
     val cond = s.conditions
     val c = s.combat
-    var reasons = 0
-    if s.tick <= cond.teleportUntil then reasons |= Reason.Teleport
-    if r.forced then reasons |= Reason.ServerRotation
-    if !RotationSystem.calibrated(r) then reasons |= Reason.Uncalibrated
-    if cond.guiOpen then reasons |= Reason.Gui
-    if b.inVehicle then reasons |= Reason.Vehicle
-    if b.gliding then reasons |= Reason.Gliding
-    if b.riptide then reasons |= Reason.Riptide
-    if s.tick <= cond.knockbackUntil then reasons |= Reason.Knockback
-    if cond.idleRun >= s.config.idleTicks then reasons |= Reason.Idle
-    if c.target == null then reasons |= Reason.NoTarget
-    else if c.inflation > s.config.maxInflation then reasons |= Reason.Uncertain
-    if b.swimming || b.inWater then reasons |= Reason.Water
-    if !s.profile.realInput then reasons |= Reason.LegacyInput
-    if r.discontinuity then reasons |= Reason.Discontinuity
-    if !s.flyingThisTick then reasons |= Reason.NoMoveTick
-    if s.clicks.attack then reasons |= Reason.Attack
-    reasons
+    Reason.Teleport.when(s.tick <= cond.teleportUntil)
+      | Reason.ServerRotation.when(r.forced)
+      | Reason.Uncalibrated.when(!RotationSystem.calibrated(r))
+      | Reason.Gui.when(cond.guiOpen)
+      | Reason.Vehicle.when(b.inVehicle)
+      | Reason.Gliding.when(b.gliding)
+      | Reason.Riptide.when(b.riptide)
+      | Reason.Knockback.when(s.tick <= cond.knockbackUntil)
+      | Reason.Idle.when(cond.idleRun >= s.config.idleTicks)
+      | Reason.NoTarget.when(c.target == null)
+      | Reason.Uncertain.when(c.target != null && c.inflation > s.config.maxInflation)
+      | Reason.Water.when(b.swimming || b.inWater)
+      | Reason.LegacyInput.when(!s.profile.realInput)
+      | Reason.Discontinuity.when(r.discontinuity)
+      | Reason.NoMoveTick.when(!s.flyingThisTick)
+      | Reason.Attack.when(s.clicks.attack)
 
   /** What the player was doing this tick, as a set of `ActivityBit` bits. */
-  private def activityOf(s: PlayerSim): Int =
+  private def activityOf(s: PlayerSim): ActivityBit.Activity =
     val cl = s.clicks
-    var activity = 0
-    if s.keys.any then activity |= ActivityBit.Moving
-    if s.tick - cl.lastDigTick <= RecentTicks then activity |= ActivityBit.Mining
-    if s.tick - cl.lastPlaceTick <= RecentTicks then activity |= ActivityBit.Building
-    if s.rotation.rotated then activity |= ActivityBit.Rotating
-    activity
+    ActivityBit.Moving.when(s.keys.any)
+      | ActivityBit.Mining.when(s.tick - cl.lastDigTick <= RecentTicks)
+      | ActivityBit.Building.when(s.tick - cl.lastPlaceTick <= RecentTicks)
+      | ActivityBit.Rotating.when(s.rotation.rotated)
 
   private inline val RecentTicks = 10
 

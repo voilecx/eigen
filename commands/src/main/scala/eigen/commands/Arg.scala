@@ -40,6 +40,9 @@ final class Arg[A] private (
   /** Adds fixed tab completions. */
   def suggest(values: String*): Arg[A] = suggest(_ => values)
 
+  /** Reads this argument's parsed value from the ambient [[Ctx]]. */
+  inline def value(using ctx: Ctx): A = ctx(this)
+
 object Arg:
   /** A single word without spaces. */
   def word(name: String): Arg[String] =

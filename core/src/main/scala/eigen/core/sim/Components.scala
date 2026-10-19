@@ -148,8 +148,11 @@ final class Combat:
 
 /** Item kinds in the hotbar and offhand, for the `item_kind` meta column. */
 final class Inventory:
-  val hotbar = new Array[Byte](9)
-  var offhand: Byte = 0
+  import ItemKind.ItemKind
+
+  private val hotbar = new Array[Byte](9)
+  var offhand: ItemKind = ItemKind.Empty
   var slot = 0
 
-  def held: Byte = hotbar(slot)
+  def setHotbar(index: Int, kind: ItemKind): Unit = hotbar(index) = kind.code
+  def held: ItemKind = ItemKind.fromCode(hotbar(slot))

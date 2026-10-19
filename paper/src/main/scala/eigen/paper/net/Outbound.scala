@@ -155,8 +155,7 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     if w.getStatus == DeathStatus then
       val id = w.getEntityId
       p.clock.at(p.bracket(event)): () =>
-        val e = p.sim.entity(id)
-        if e != null then e.dead = true
+        p.sim.withEntity(id)(_.dead = true)
 
   private def knockback(p: EigenPlayer, event: PacketSendEvent): Unit =
     p.clock.at(p.bracket(event))(() => p.sim.onKnockback())
@@ -193,9 +192,7 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     ids.foreach(p.noteDespawned)
     val t = p.clock.lastSent
     p.clock.at(t): () =>
-      ids.foreach: id =>
-        val e = p.sim.entity(id)
-        if e != null then e.dead = true
+      ids.foreach(id => p.sim.withEntity(id)(_.dead = true))
     p.clock.at(t + 1): () =>
       ids.foreach: id =>
         p.sim.removeEntity(id)
@@ -208,11 +205,9 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     if id == p.sim.selfId then return
     val t = p.movementTransaction(id)
     p.clock.at(t): () =>
-      val e = p.sim.entity(id)
-      if e != null then e.onFirstTransaction(relative, hasPos, x, y, z)
+      p.sim.withEntity(id)(_.onFirstTransaction(relative, hasPos, x, y, z))
     p.clock.at(t + 1): () =>
-      val e = p.sim.entity(id)
-      if e != null then e.onSecondTransaction()
+      p.sim.withEntity(id)(_.onSecondTransaction())
 
   private def metadata(p: EigenPlayer, w: WrapperPlayServerEntityMetadata): Unit =
     val id = w.getEntityId
@@ -245,15 +240,13 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     else v.isInstanceOf[EntityPose] && !self
 
   private def applyMeta(p: EigenPlayer, id: Int, self: Boolean, d: EntityData[?]): Unit =
-    (d.getIndex, d.getValue) match
-      case (0, flags: java.lang.Byte) if self =>
+    d match
+      case MetaEntry(0, flags: java.lang.Byte) if self =>
         p.sim.onSelfFlags(gliding = (flags & 0x80) != 0, swimming = (flags & 0x10) != 0)
-      case (i, flags: java.lang.Byte) if self && i == livingIdx =>
+      case MetaEntry(i, flags: java.lang.Byte) if self && i == livingIdx =>
         p.sim.onSelfLivingFlags(riptide = (flags & 0x04) != 0)
-      case (_, pose: EntityPose) if !self =>
-        val meta = p.entityMeta.getOrNull(id)
-        val e = p.sim.entity(id)
-        if meta != null && e != null then
+      case MetaEntry(_, pose: EntityPose) if !self =>
+        p.withTrackedEntity(id): (meta, e) =>
           meta.crouching = pose == EntityPose.CROUCHING
           meta.lowPose = pose == EntityPose.SWIMMING || pose == EntityPose.FALL_FLYING || pose == EntityPose.SPIN_ATTACK
           EntityCatalog.resize(e, meta.tpe, p.profile, meta.crouching, meta.lowPose, meta.scale)
@@ -294,9 +287,7 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
     if key.endsWith("scale") then
       if self then p.sim.onSelfScale(value.toFloat)
       else
-        val meta = p.entityMeta.getOrNull(id)
-        val e = p.sim.entity(id)
-        if meta != null && e != null then
+        p.withTrackedEntity(id): (meta, e) =>
           meta.scale = value.toFloat
           EntityCatalog.resize(e, meta.tpe, p.profile, meta.crouching, meta.lowPose, meta.scale)
     else if self && key.endsWith("attack_speed") then p.sim.onAttackSpeed(value)
@@ -310,13 +301,26 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
   private def inventorySlot(p: EigenPlayer, slot: Int, item: ItemStack): Unit =
     val kind = if item == null || item.isEmpty then ItemKind.Empty else ItemKind.of(item.getType.getName.toString)
     p.clock.at(p.clock.lastSent): () =>
-      if slot >= FirstHotbarSlot && slot < OffhandSlot then p.sim.inventory.hotbar(slot - FirstHotbarSlot) = kind
+      if slot >= FirstHotbarSlot && slot < OffhandSlot then p.sim.inventory.setHotbar(slot - FirstHotbarSlot, kind)
       else if slot == OffhandSlot then p.sim.inventory.offhand = kind
 
 object Outbound:
   @FunctionalInterface
   trait Handler:
     def handle(p: EigenPlayer, event: PacketSendEvent): Unit
+
+  /**
+   * Zero-allocation name-based extractor for `EntityData[?]`: Scala 3 compiles pattern matches
+   * against `MetaEntry(index, value)` into direct `.getIndex` and `.getValue` calls without
+   * allocating an intermediate `Tuple2` or `Option`.
+   */
+  private object MetaEntry:
+    final class Match(val raw: EntityData[?]) extends AnyVal:
+      def isEmpty: Boolean = false
+      def get: Match = this
+      def _1: Int = raw.getIndex
+      def _2: Any = raw.getValue
+    inline def unapply(d: EntityData[?]): Match = Match(d)
 
   private inline val DeathStatus = 3
   /** Window-0 slot of the first hotbar slot; the hotbar spans nine slots. */

@@ -35,6 +35,22 @@ final class Read[A] private (private[config] val run: Source => Either[String, A
 
   def flatMap[B](f: A => Read[B]): Read[B] = new Read(source => run(source).flatMap(a => f(a).run(source)))
 
+  /**
+   * Applicative product of two independent reads: evaluates both against the same [[Source]] and
+   * accumulates both error messages (separated by `"; "`) if both fail.
+   */
+  def zip[B](that: Read[B]): Read[(A, B)] = new Read(source =>
+    (this.run(source), that.run(source)) match
+      case (Right(a), Right(b)) => Right((a, b))
+      case (Left(e1), Left(e2)) => Left(s"$e1; $e2")
+      case (Left(e1), _) => Left(e1)
+      case (_, Left(e2)) => Left(e2)
+  )
+
+  /** Validates the parsed value under `key`, failing with `key: message` when `p` does not hold. */
+  def filterOrElse(key: String, message: String)(p: A => Boolean): Read[A] =
+    flatMap(a => if p(a) then Read.pure(a) else Read.fail(s"$key: $message"))
+
   /** Reads the whole document. */
   def from(source: Source): Either[String, A] = run(source)
 
@@ -84,9 +100,13 @@ object Read:
   def choice[A](name: String, default: String)(options: (String, A)*): Read[A] =
     val table = options.toMap
     key(name, table(default)) {
-      case s: String => table.get(s.toLowerCase).toRight(s"must be one of ${table.keys.mkString(", ")}, got '$s'")
+      case s: String => table.get(s.toLowerCase).toRight(s"must be one of ${options.map(_._1).mkString(", ")}, got '$s'")
       case other => typeError(other, "text")
     }
+
+  /** One of the cases of a Scala 3 `enum`, matched case-insensitively by `productPrefix`. */
+  def enumChoice[E <: scala.reflect.Enum](name: String, default: E, values: Array[E]): Read[E] =
+    choice(name, default.productPrefix.toLowerCase)(values.map(v => v.productPrefix.toLowerCase -> v).toSeq*)
 
   /** A nested section. A missing section reads every key from its default; a scalar is an error. */
   def section[A](name: String)(inner: Read[A]): Read[A] =

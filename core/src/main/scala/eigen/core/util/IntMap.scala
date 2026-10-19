@@ -39,6 +39,11 @@ final class IntMap[A <: AnyRef: ClassTag](initialCapacity: Int = 16):
       i = (i + 1) & mask
     null.asInstanceOf[A]
 
+  /** Executes `f` with the value mapped to `key` if present, allocating no `Option` or closure. */
+  inline def withValue(key: Int)(inline f: A => Unit): Unit =
+    val v = getOrNull(key)
+    if v != null then f(v)
+
   def contains(key: Int): Boolean = getOrNull(key) != null
 
   def update(key: Int, value: A): Unit =

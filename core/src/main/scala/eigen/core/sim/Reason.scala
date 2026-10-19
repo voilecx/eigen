@@ -18,40 +18,74 @@ package eigen.core.sim
 /**
  * Why a tick's streams are masked; the bit set goes to the `reasons` meta column. Bits are part
  * of the dataset format: never renumber, only append.
+ *
+ * Encapsulated as a zero-cost `opaque type` so bitset combinations cannot be confused with
+ * arbitrary integers or activity bits while compiling down to unboxed `int` instructions.
  */
 object Reason:
-  inline val Teleport = 1 << 0
-  inline val ServerRotation = 1 << 1
-  inline val Uncalibrated = 1 << 2
-  inline val Gui = 1 << 3
-  inline val Vehicle = 1 << 4
-  inline val Gliding = 1 << 5
-  inline val Riptide = 1 << 6
-  inline val Knockback = 1 << 7
-  inline val Idle = 1 << 8
-  inline val Uncertain = 1 << 9
-  inline val NoTarget = 1 << 10
-  inline val Water = 1 << 11
+  opaque type Reason = Int
+
+  val None: Reason = 0
+  val Teleport: Reason = 1 << 0
+  val ServerRotation: Reason = 1 << 1
+  val Uncalibrated: Reason = 1 << 2
+  val Gui: Reason = 1 << 3
+  val Vehicle: Reason = 1 << 4
+  val Gliding: Reason = 1 << 5
+  val Riptide: Reason = 1 << 6
+  val Knockback: Reason = 1 << 7
+  val Idle: Reason = 1 << 8
+  val Uncertain: Reason = 1 << 9
+  val NoTarget: Reason = 1 << 10
+  val Water: Reason = 1 << 11
   /** Movement keys were inferred from motion (client older than 1.21.2), not reported. */
-  inline val LegacyInput = 1 << 12
-  inline val Discontinuity = 1 << 13
+  val LegacyInput: Reason = 1 << 12
+  val Discontinuity: Reason = 1 << 13
   /** 1.21.2+ only: the tick was closed by `CLIENT_TICK_END` with no movement packet, so a
     * client without tick-end packets would not have produced this row. An observation marker,
     * deliberately outside the validity masks: training can filter on it to compare client
     * versions on equal terms. */
-  inline val NoMoveTick = 1 << 14
+  val NoMoveTick: Reason = 1 << 14
   /** An attack input happened this tick, whether or not a target was matched; the `attack`
     * feature column stays target-gated, this bit marks the raw input. Last free bit of the
     * U16: the next reason needs a wider column. */
-  inline val Attack = 1 << 15
+  val Attack: Reason = 1 << 15
 
-  inline val MasksRot = Teleport | ServerRotation | Uncalibrated | Gui | Vehicle | Gliding | Riptide | Idle | Discontinuity
-  inline val MasksInp = Teleport | Gui | Vehicle | Gliding | Riptide | Knockback | Idle | Water
-  inline val MasksTgt = NoTarget | Uncertain | Teleport | ServerRotation | Vehicle | Gliding | Riptide | Discontinuity
+  val MasksRot: Reason = Teleport | ServerRotation | Uncalibrated | Gui | Vehicle | Gliding | Riptide | Idle | Discontinuity
+  val MasksInp: Reason = Teleport | Gui | Vehicle | Gliding | Riptide | Knockback | Idle | Water
+  val MasksTgt: Reason = NoTarget | Uncertain | Teleport | ServerRotation | Vehicle | Gliding | Riptide | Discontinuity
 
-/** Bits of the `activity` meta column. */
+  inline def fromRaw(bits: Int): Reason = bits
+
+  extension (self: Reason)
+    inline def |(other: Reason): Reason = self | other
+    inline def &(other: Reason): Reason = self & other
+    inline def intersects(mask: Reason): Boolean = (self & mask) != 0
+    inline def disjointFrom(mask: Reason): Boolean = (self & mask) == 0
+    inline def contains(bit: Reason): Boolean = (self & bit) == bit
+    inline def when(cond: Boolean): Reason = if cond then self else 0
+    inline def raw: Int = self
+    inline def toInt: Int = self
+    inline def toFloat: Float = self.toFloat
+
+/** Bits of the `activity` meta column, encapsulated as a zero-cost `opaque type`. */
 object ActivityBit:
-  inline val Moving = 1 << 0
-  inline val Mining = 1 << 1
-  inline val Building = 1 << 2
-  inline val Rotating = 1 << 3
+  opaque type Activity = Int
+
+  val None: Activity = 0
+  val Moving: Activity = 1 << 0
+  val Mining: Activity = 1 << 1
+  val Building: Activity = 1 << 2
+  val Rotating: Activity = 1 << 3
+
+  inline def fromRaw(bits: Int): Activity = bits
+
+  extension (self: Activity)
+    inline def |(other: Activity): Activity = self | other
+    inline def &(other: Activity): Activity = self & other
+    inline def intersects(mask: Activity): Boolean = (self & mask) != 0
+    inline def contains(bit: Activity): Boolean = (self & bit) == bit
+    inline def when(cond: Boolean): Activity = if cond then self else 0
+    inline def raw: Int = self
+    inline def toInt: Int = self
+    inline def toFloat: Float = self.toFloat

@@ -96,6 +96,3 @@ sbt shutdown && EIGEN_WRITE_FIXTURES=1 sbt core/testFull
 - Make the smallest change that fully solves the task; do not refactor unrelated code.
 - Keep the build warning-free and run `sbt testFull` before finishing.
 - If a requirement is ambiguous or conflicts with these rules, stop and ask.
-
-
-[You have received this identical output 3 times. Re-reading '/Users/delyfss/Desktop/eigen/eigen/AGENTS.md:raw' will not change it — use a narrower selector (path:A-B), or proceed with the edit.]

@@ -104,18 +104,18 @@ final class CommandSpec private[commands] (val name: String, val description: St
     builder
 
 /**
- * A small DSL for Paper's Brigadier commands. Blocks nest with context functions, so the code
- * mirrors the command tree:
+ * A small DSL for Paper's Brigadier commands. Blocks nest with context functions (`Node ?=> Unit`
+ * for tree structure and `Ctx ?=> Unit` for execution), so the code mirrors the command tree:
  *
  * {{{
  * val Target = Arg.player("player")
  * command("eigen", "Eigen anti-cheat"):
  *   requires("eigen.command")
  *   literal("status"):
- *     run(ctx => ctx.reply("ok"))
+ *     run(reply("ok"))
  *   literal("debug"):
  *     arg(Target):
- *       run(ctx => ctx.reply(ctx(Target).getName))
+ *       run(reply(Target.value.getName))
  * }}}
  */
 object CommandTree:
@@ -141,12 +141,26 @@ object CommandTree:
   /** Restricts this node and everything below it to senders with any of `permissions`. */
   def requiresAny(permissions: String*)(using n: Node): Unit = n.permissions = permissions
 
-  /** Makes this node runnable. `help` shows up in [[CommandSpec.usage]]. */
-  def run(f: Ctx => Unit)(using n: Node): Unit = n.executor = Some(f)
+  /** Makes this node runnable with `Ctx` provided as a context parameter. `help` shows up in [[CommandSpec.usage]]. */
+  def run(body: Ctx ?=> Unit)(using n: Node): Unit =
+    n.executor = Some(c => body(using c))
 
-  def run(help: String)(f: Ctx => Unit)(using n: Node): Unit =
+  def run(help: String)(body: Ctx ?=> Unit)(using n: Node): Unit =
     n.help = help
-    n.executor = Some(f)
+    n.executor = Some(c => body(using c))
+
+  /** Accesses the ambient command context inside a [[run]] block. */
+  inline def ctx(using c: Ctx): Ctx = c
+
+  /** Accesses the command sender from the ambient [[Ctx]]. */
+  inline def sender(using c: Ctx): CommandSender = c.sender
+
+  /** Replies to the ambient command sender. */
+  inline def reply(message: Component)(using c: Ctx): Unit = c.reply(message)
+  inline def reply(message: String)(using c: Ctx): Unit = c.reply(message)
+
+  /** Aborts the command with an error message sent to the ambient sender. */
+  inline def fail(message: String)(using c: Ctx): Nothing = c.fail(message)
 
   /** Registers commands with Paper's lifecycle so they survive `/reload` of the datapacks. */
   def register(plugin: JavaPlugin, specs: CommandSpec*): Unit =

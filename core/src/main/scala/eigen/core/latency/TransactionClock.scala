@@ -50,8 +50,8 @@ final class TransactionClock:
   // sent-but-unanswered ones. Two fixed 4 KiB tables replace the per-id `java.lang.Short`
   // boxing and the per-pong stream scan this class used to pay. Ids wrap only after 32768
   // outstanding transactions, which no live connection reaches.
-  private val pendingBits = AtomicIntegerArray(Bits)
-  private val inFlightBits = AtomicIntegerArray(Bits)
+  private val pendingBits = AtomicBitSet(Bits)
+  private val inFlightBits = AtomicBitSet(Bits)
   private val inFlight = ConcurrentLinkedQueue[Stamp]()
 
   /** Transactions the client has been sent / has answered. Task ids compare against these. */
@@ -72,15 +72,15 @@ final class TransactionClock:
   def nextId(): Short =
     val raw = counter.getAndIncrement() & 0x7fff
     val id = (if raw == 0 then 0x7fff else raw).toShort
-    setBit(pendingBits, id)
+    pendingBits.set(id)
     id
 
   /** Called on the send path when a ping leaves; ignores pings that are not ours. */
   def onPingSent(id: Int): Unit =
     if isOurs(id) then
       val sid = id.toShort
-      if testAndClearBit(pendingBits, sid) then
-        setBit(inFlightBits, sid)
+      if pendingBits.testAndClear(sid) then
+        inFlightBits.set(sid)
         inFlight.add(Stamp(sid, System.nanoTime()))
         sent.incrementAndGet()
 
@@ -89,11 +89,11 @@ final class TransactionClock:
    * caller can cancel it; due tasks run immediately on the calling thread.
    */
   def onPong(id: Int): Boolean =
-    if !isOurs(id) || !testBit(inFlightBits, id.toShort) then return false
+    if !isOurs(id) || !inFlightBits.contains(id.toShort) then return false
     var stamp: Stamp | Null = null
     while
       stamp = inFlight.poll()
-      stamp != null && { received.incrementAndGet(); clearBit(inFlightBits, stamp.nn.id); stamp.nn.id != id.toShort }
+      stamp != null && { received.incrementAndGet(); inFlightBits.clear(stamp.nn.id); stamp.nn.id != id.toShort }
     do ()
     val s = stamp
     if s != null then
@@ -146,30 +146,31 @@ object TransactionClock:
   /** Ours are positive shorts; GrimAC's are `<= 0`; anything wider than a short belongs to neither. */
   inline def isOurs(id: Int): Boolean = id > 0 && id == id.toShort
 
-  // Bit twiddles as CAS loops: contention is one writer per id, so they run uncontended
-  // and allocate nothing.
-  private def setBit(bits: AtomicIntegerArray, id: Short): Unit =
-    val b = id.toInt & 0x7fff
-    val w = b >>> 5
-    val m = 1 << (b & 31)
-    var prev = bits.get(w)
-    while (prev & m) == 0 && !bits.compareAndSet(w, prev, prev | m) do prev = bits.get(w)
+  // Bit twiddles as a zero-cost `opaque type` with an inline CAS helper: contention is one
+  // writer per id, so they run uncontended and allocate nothing.
+  private[latency] opaque type AtomicBitSet = AtomicIntegerArray
 
-  private def clearBit(bits: AtomicIntegerArray, id: Short): Unit =
-    val b = id.toInt & 0x7fff
-    val w = b >>> 5
-    val m = 1 << (b & 31)
-    var prev = bits.get(w)
-    while (prev & m) != 0 && !bits.compareAndSet(w, prev, prev & ~m) do prev = bits.get(w)
+  private[latency] object AtomicBitSet:
+    inline def apply(words: Int): AtomicBitSet = AtomicIntegerArray(words)
 
-  private def testBit(bits: AtomicIntegerArray, id: Short): Boolean =
-    val b = id.toInt & 0x7fff
-    (bits.get(b >>> 5) & (1 << (b & 31))) != 0
+    extension (bits: AtomicBitSet)
+      private inline def modify(id: Short, inline cond: (Int, Int) => Boolean, inline next: (Int, Int) => Int): Boolean =
+        val b = id.toInt & 0x7fff
+        val w = b >>> 5
+        val m = 1 << (b & 31)
+        var prev = bits.get(w)
+        while cond(prev, m) && !bits.compareAndSet(w, prev, next(prev, m)) do prev = bits.get(w)
+        cond(prev, m)
 
-  private def testAndClearBit(bits: AtomicIntegerArray, id: Short): Boolean =
-    val b = id.toInt & 0x7fff
-    val w = b >>> 5
-    val m = 1 << (b & 31)
-    var prev = bits.get(w)
-    while (prev & m) != 0 && !bits.compareAndSet(w, prev, prev & ~m) do prev = bits.get(w)
-    (prev & m) != 0
+      inline def set(id: Short): Unit =
+        val _ = modify(id, (prev, m) => (prev & m) == 0, _ | _)
+
+      inline def clear(id: Short): Unit =
+        val _ = modify(id, (prev, m) => (prev & m) != 0, (prev, m) => prev & ~m)
+
+      inline def testAndClear(id: Short): Boolean =
+        modify(id, (prev, m) => (prev & m) != 0, (prev, m) => prev & ~m)
+
+      inline def contains(id: Short): Boolean =
+        val b = id.toInt & 0x7fff
+        (bits.get(b >>> 5) & (1 << (b & 31))) != 0

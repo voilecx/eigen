@@ -52,10 +52,10 @@ final class EigenCommands(
 
     literal("alerts"):
       requires("eigen.alerts")
-      run("toggle staff alerts"): ctx =>
-        ctx.raw.getSource.getSender match
-          case staff: Player => ctx.reply(if alerts.toggle(staff) then "Alerts on." else "Alerts off.")
-          case _ => ctx.fail("Only players receive alerts.")
+      run("toggle staff alerts"):
+        sender match
+          case staff: Player => reply(if alerts.toggle(staff) then "Alerts on." else "Alerts off.")
+          case _ => fail("Only players receive alerts.")
 
     literal("vl"):
       requires("eigen.alerts")
@@ -70,103 +70,106 @@ final class EigenCommands(
     literal("exempt"):
       requires("eigen.admin")
       arg(Target):
-        run("toggle streaming for a player"): ctx =>
-          val p = tracked(ctx, ctx(Target))
+        run("toggle streaming for a player"):
+          val p = tracked(Target.value)
           p.exempt = !p.exempt
-          ctx.reply(s"${p.name} is ${if p.exempt then "exempt" else "no longer exempt"}.")
+          reply(s"${p.name} is ${if p.exempt then "exempt" else "no longer exempt"}.")
 
     literal("collect"):
       requires("eigen.collect")
       literal("start"):
         arg(Target):
           arg(LabelArg):
-            run("record a labelled session")(ctx => start(ctx, ""))
+            run("record a labelled session")(start(""))
             arg(Details):
-              run("…with key=value tags and a note")(ctx => start(ctx, ctx(Details)))
+              run("…with key=value tags and a note")(start(Details.value))
       literal("stop"):
         arg(Target):
-          run("finish a recording"): ctx =>
-            val target = ctx(Target)
-            collector.stop(target.getUniqueId).fold(ctx.fail, s => ctx.reply(s"Stopped ${describe(s)}."))
+          run("finish a recording"):
+            collector.stop(Target.value.getUniqueId).replyOrFail(s => s"Stopped ${describe(s)}.")
       literal("mark"):
         arg(Target):
           arg(Toggle):
-            run("mark a cheat toggle inside a recording")(ctx => mark(ctx, ""))
+            run("mark a cheat toggle inside a recording")(mark(""))
             arg(Note):
-              run("…with a note")(ctx => mark(ctx, ctx(Note)))
+              run("…with a note")(mark(Note.value))
       literal("list"):
-        run("recordings in progress"): ctx =>
+        run("recordings in progress"):
           val active = collector.active.toSeq
-          if active.isEmpty then ctx.reply("No recordings in progress.")
-          else active.foreach(s => ctx.reply(describe(s)))
+          if active.isEmpty then reply("No recordings in progress.")
+          else active.foreach(s => reply(describe(s)))
 
     literal("record"):
       requires("eigen.record")
       literal("start"):
-        run("record your own gameplay as legit")(ctx => recordStart(ctx, ""))
+        run("record your own gameplay as legit")(recordStart(""))
         arg(Note):
-          run("…with an optional note")(ctx => recordStart(ctx, ctx(Note)))
+          run("…with an optional note")(recordStart(Note.value))
       literal("stop"):
         run("stop your own legit recording")(recordStop)
       literal("status"):
         run("check your calibration and recording progress")(recordStatus)
 
     literal("help"):
-      run(ctx => help(ctx))
+      run("show command usage")(help)
 
-  private def help(ctx: Ctx): Unit = spec.usage.foreach(line => ctx.reply(line))
+  extension [A](res: Either[String, A])
+    private def replyOrFail(f: A => String)(using Ctx): Unit =
+      res.fold(fail, a => reply(f(a)))
 
-  private def status(ctx: Ctx): Unit =
+  private def help(using Ctx): Unit = spec.usage.foreach(reply)
+
+  private def status(using Ctx): Unit =
     val tracked = players.all.size
-    ctx.reply(header("Eigen"))
-    ctx.reply(s"Backend: ${stream.state.toString.toLowerCase}${if stream.inference then ", inference on" else ""}")
+    reply(header("Eigen"))
+    reply(s"Backend: ${stream.state.toString.toLowerCase}${if stream.inference then ", inference on" else ""}")
     if garnet.enabled then
-      ctx.reply(s"Garnet: ${if garnet.connected then "connected" else "connecting/offline"}")
-    ctx.reply(s"Players tracked: $tracked, recordings: ${collector.active.size}")
-    if stream.enabled then ctx.reply(s"Queued windows: ${stream.backlog}, dropped: ${stream.dropped}")
+      reply(s"Garnet: ${if garnet.connected then "connected" else "connecting/offline"}")
+    reply(s"Players tracked: $tracked, recordings: ${collector.active.size}")
+    if stream.enabled then reply(s"Queued windows: ${stream.backlog}, dropped: ${stream.dropped}")
 
-  private def vl(ctx: Ctx): Unit =
-    val name = ctx(PlayerName)
+  private def vl(using Ctx): Unit =
+    val name = PlayerName.value
     garnet.queryViolation(name):
       case Some(st) =>
-        ctx.reply(
+        reply(
           f"${st.player}: VL x${st.vl} — last ${st.label} ${st.score * 100}%.1f%% (${st.model}) on ${st.server}"
         )
       case None =>
-        ctx.reply(s"No violations recorded for $name.")
+        reply(s"No violations recorded for $name.")
 
-  private def recordStart(ctx: Ctx, note: String): Unit =
-    val self = senderPlayer(ctx)
+  private def recordStart(note: String)(using Ctx): Unit =
+    val self = senderPlayer
     collector
       .start(self.getUniqueId, self.getName, Label.Legit, Map("source" -> "self"), note.trim, selfService = true)
-      .fold(ctx.fail, s => ctx.reply(s"Started self-recording (${describe(s)})."))
+      .replyOrFail(s => s"Started self-recording (${describe(s)}).")
 
-  private def recordStop(ctx: Ctx): Unit =
-    val self = senderPlayer(ctx)
-    collector.stopSelf(self.getUniqueId).fold(ctx.fail, s => ctx.reply(s"Stopped self-recording (${describe(s)})."))
+  private def recordStop(using Ctx): Unit =
+    val self = senderPlayer
+    collector.stopSelf(self.getUniqueId).replyOrFail(s => s"Stopped self-recording (${describe(s)}).")
 
-  private def recordStatus(ctx: Ctx): Unit =
-    val self = senderPlayer(ctx)
-    val p = tracked(ctx, self)
+  private def recordStatus(using Ctx): Unit =
+    val self = senderPlayer
+    val p = tracked(self)
     p.post: () =>
       val calibrated = RotationSystem.calibrated(p.sim.rotation)
       val gate = if p.sim.combat.gate then "combat" else "calm"
       val rec = Option(p.session).fold("not recording")(s => s"recording (${s.windows.get} windows)")
-      ctx.reply(s"Calibration: ${if calibrated then "ready" else "warming up"}, gate: $gate, status: $rec")
+      reply(s"Calibration: ${if calibrated then "ready" else "warming up"}, gate: $gate, status: $rec")
 
-  private def senderPlayer(ctx: Ctx): Player =
-    ctx.raw.getSource.getSender match
+  private def senderPlayer(using Ctx): Player =
+    sender match
       case player: Player => player
-      case _ => ctx.fail("Only players can use /eigen record.")
+      case _ => fail("Only players can use /eigen record.")
 
-  private def debug(ctx: Ctx): Unit =
-    val p = tracked(ctx, ctx(Target))
+  private def debug(using Ctx): Unit =
+    val p = tracked(Target.value)
     // Read on the player's network thread so the snapshot is consistent.
     p.post: () =>
       val s = p.sim
       val r = s.rotation
       val c = s.combat
-      ctx.reply(header(p.name))
+      reply(header(p.name))
       val lines = Seq(
         s"client protocol ${p.profile.protocol}, tick-end ${p.profile.tickEnd}, brand ${p.brand}",
         f"rtt ${p.clock.rtt}%.0f ms, tick ${s.tick}, epoch ${s.epoch}, engagement ${c.engagement}",
@@ -175,23 +178,23 @@ final class EigenCommands(
         f"aim ${c.aimYaw}%.2f/${c.aimPitch}%.2f, distance ${c.distance}%.2f, inflation ${c.inflation}%.2f",
         s"recording: ${Option(p.session).map(describe).getOrElse("no")}, exempt ${p.exempt}",
       )
-      lines.foreach(l => ctx.reply(l))
+      lines.foreach(reply)
 
-  private def start(ctx: Ctx, details: String): Unit =
-    val target = ctx(Target)
-    val label = Label.parse(ctx(LabelArg)).getOrElse(ctx.fail("Unknown label."))
+  private def start(details: String)(using Ctx): Unit =
+    val target = Target.value
+    val label = Label.parse(LabelArg.value).getOrElse(fail("Unknown label."))
     val (tagTokens, words) = details.split("\\s+").filter(_.nonEmpty).partition(_.contains('='))
     val tags = tagTokens.map(_.split("=", 2)).collect { case Array(k, v) if k.nonEmpty => k -> v }.toMap
-    collector.start(target, label, tags, words.mkString(" ")).fold(ctx.fail, s => ctx.reply(s"Recording ${describe(s)}."))
+    collector.start(target, label, tags, words.mkString(" ")).replyOrFail(s => s"Recording ${describe(s)}.")
 
-  private def mark(ctx: Ctx, note: String): Unit =
-    val target = ctx(Target)
-    val on = ctx(Toggle) == "on"
-    collector.mark(target.getUniqueId, on, note).fold(ctx.fail, _ => ctx.reply(s"Marked ${target.getName}: ${if on then "on" else "off"}."))
+  private def mark(note: String)(using Ctx): Unit =
+    val target = Target.value
+    val on = Toggle.value == "on"
+    collector.mark(target.getUniqueId, on, note).replyOrFail(_ => s"Marked ${target.getName}: ${if on then "on" else "off"}.")
 
-  private def tracked(ctx: Ctx, player: Player) =
+  private def tracked(player: Player)(using Ctx) =
     val p = players.get(player.getUniqueId)
-    if p == null then ctx.fail(s"${player.getName} is not tracked.") else p
+    if p == null then fail(s"${player.getName} is not tracked.") else p
 
   private def describe(s: CollectSession): String =
     val tags = if s.tags.isEmpty then "" else s.tags.map((k, v) => s"$k=$v").mkString(" [", ", ", "]")

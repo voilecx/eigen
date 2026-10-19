@@ -41,7 +41,11 @@ class UtilSuite extends munit.FunSuite:
         map(k) = k.toString
         ref(k) = k.toString
       assertEquals(map.size, ref.size)
-    for k <- -256 until 256 do assertEquals(Option(map.getOrNull(k)), ref.get(k))
+    for k <- -256 until 256 do
+      assertEquals(Option(map.getOrNull(k)), ref.get(k))
+      var withVal: Option[String] = None
+      map.withValue(k)(v => withVal = Some(v))
+      assertEquals(withVal, ref.get(k))
     var seen = 0
     map.foreachValue(_ => seen += 1)
     assertEquals(seen, ref.size)

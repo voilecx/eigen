@@ -15,37 +15,53 @@
 
 package eigen.core.sim
 
-/** Coarse class of a held item, for the `item_kind` meta column. Codes are dataset format. */
+/**
+ * Coarse class of a held item, for the `item_kind` meta column. Codes are dataset format.
+ *
+ * Encapsulated as a zero-cost `opaque type` backed by a primitive `Byte` so item kind codes
+ * stay distinct from arbitrary bytes at compile time with zero runtime overhead.
+ */
 object ItemKind:
-  final val Empty: Byte = 0
-  final val Sword: Byte = 1
-  final val Axe: Byte = 2
-  final val Mace: Byte = 3
-  final val Trident: Byte = 4
-  final val Spear: Byte = 5
-  final val Bow: Byte = 6
-  final val Crossbow: Byte = 7
-  final val Crystal: Byte = 8
-  final val Totem: Byte = 9
-  final val Shield: Byte = 10
-  final val Food: Byte = 11
-  final val Other: Byte = 12
+  opaque type ItemKind = Byte
+
+  val Empty: ItemKind = 0
+  val Sword: ItemKind = 1
+  val Axe: ItemKind = 2
+  val Mace: ItemKind = 3
+  val Trident: ItemKind = 4
+  val Spear: ItemKind = 5
+  val Bow: ItemKind = 6
+  val Crossbow: ItemKind = 7
+  val Crystal: ItemKind = 8
+  val Totem: ItemKind = 9
+  val Shield: ItemKind = 10
+  val Food: ItemKind = 11
+  val Other: ItemKind = 12
+
+  inline def fromCode(code: Byte): ItemKind = code
+
+  extension (self: ItemKind)
+    inline def code: Byte = self
+    inline def toFloat: Float = self.toFloat
+
+  private object Suffix:
+    def unapply(s: String): Option[String] =
+      val idx = s.lastIndexOf('_')
+      if idx >= 0 then Some(s.substring(idx)) else None
 
   /** Classifies a namespaced item id such as `minecraft:diamond_sword`. */
-  def of(id: String): Byte =
-    val name = id.substring(id.indexOf(':') + 1)
-    if name.isEmpty || name == "air" then Empty
-    else if name.endsWith("_sword") then Sword
-    else if name.endsWith("_axe") then Axe
-    else if name.endsWith("_spear") then Spear
-    else
-      name match
-        case "mace" => Mace
-        case "trident" => Trident
-        case "bow" => Bow
-        case "crossbow" => Crossbow
-        case "end_crystal" => Crystal
-        case "totem_of_undying" => Totem
-        case "shield" => Shield
-        case "golden_apple" | "enchanted_golden_apple" | "cooked_beef" | "bread" | "golden_carrot" => Food
-        case _ => Other
+  def of(id: String): ItemKind =
+    id.substring(id.indexOf(':') + 1) match
+      case "" | "air" => Empty
+      case "mace" => Mace
+      case "trident" => Trident
+      case "bow" => Bow
+      case "crossbow" => Crossbow
+      case "end_crystal" => Crystal
+      case "totem_of_undying" => Totem
+      case "shield" => Shield
+      case "golden_apple" | "enchanted_golden_apple" | "cooked_beef" | "bread" | "golden_carrot" => Food
+      case Suffix("_sword") => Sword
+      case Suffix("_axe") => Axe
+      case Suffix("_spear") => Spear
+      case _ => Other

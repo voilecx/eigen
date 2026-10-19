@@ -63,3 +63,17 @@ class ReadSuite extends munit.FunSuite:
     yield (low, high)
     assertEquals(ordered.from(Source.of(Map("low" -> 5, "high" -> 3))), Left("high: must be at least low"))
     assertEquals(ordered.from(Source.of(Map("low" -> 1, "high" -> 3))), Right((1, 3)))
+
+  private enum Mode:
+    case Fast, Balanced, Accurate
+
+  test("enumChoice reads Scala 3 enums case-insensitively and lists allowed values"):
+    val r = Read.enumChoice("mode", Mode.Fast, Mode.values)
+    assertEquals(r.from(Source.of(Map.empty)), Right(Mode.Fast))
+    assertEquals(r.from(Source.of(Map("mode" -> "ACCURATE"))), Right(Mode.Accurate))
+    assertEquals(r.from(Source.of(Map("mode" -> "turbo"))), Left("mode: must be one of fast, balanced, accurate, got 'turbo'"))
+
+  test("zip accumulates errors from independent reads"):
+    val combined = Read.int("a", 1, min = 0).zip(Read.int("b", 2, min = 0))
+    assertEquals(combined.from(Source.of(Map("a" -> 3, "b" -> 4))), Right((3, 4)))
+    assertEquals(combined.from(Source.of(Map("a" -> -1, "b" -> -2))), Left(s"a: must be between 0 and ${Int.MaxValue}, got -1; b: must be between 0 and ${Int.MaxValue}, got -2"))

@@ -30,7 +30,7 @@ import com.github.retrooper.packetevents.protocol.ConnectionState
 import com.github.retrooper.packetevents.protocol.entity.`type`.EntityType
 import com.github.retrooper.packetevents.protocol.player.User
 
-import eigen.core.entity.ClientProfile
+import eigen.core.entity.{ClientProfile, TrackedEntity}
 import eigen.core.history.Window
 import eigen.core.latency.TransactionClock
 import eigen.core.sim.{PlayerSim, SimConfig}
@@ -188,6 +188,12 @@ final class EigenPlayer(
     lastMove.remove(entityId)
     despawned(entityId) = java.lang.Boolean.TRUE
     despawnedAtSent = clock.lastSent
+
+  /** Runs `f` with both the adapter metadata and the simulation entity for `id`, if present. */
+  inline def withTrackedEntity(id: Int)(inline f: (EntityMeta, TrackedEntity) => Unit): Unit =
+    entityMeta.withValue(id): meta =>
+      sim.withEntity(id): e =>
+        f(meta, e)
 
   private final class LastMove(var transaction: Int)
 

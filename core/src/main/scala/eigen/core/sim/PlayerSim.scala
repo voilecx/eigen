@@ -168,6 +168,7 @@ final class PlayerSim(val profile: ClientProfile, val config: SimConfig, emit: W
 
   def addEntity(e: TrackedEntity): Unit = entities(e.id) = e
   def entity(id: Int): TrackedEntity | Null = entities.getOrNull(id)
+  inline def withEntity(id: Int)(inline f: TrackedEntity => Unit): Unit = entities.withValue(id)(f)
   def removeEntity(id: Int): Unit =
     val e = entities.remove(id)
     if e != null && combat.target == e then combat.target = null
