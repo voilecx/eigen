@@ -75,7 +75,6 @@ class SimSuite extends munit.FunSuite:
     val attack = h.windows.filter(_.kind == WindowKind.Attack)
     assertEquals(attack.size, 1)
     val w = attack.head
-    assertEquals(w.rows, 80)
     assertEquals(w.rows, cfg.attackPre + cfg.attackPost)
     assertEquals(w.anchor, cfg.attackPre)
     assertEquals(w.layout, Schema.Combat)
@@ -207,3 +206,17 @@ class SimSuite extends munit.FunSuite:
     modern.onInput(true, false, false, false, false, false, false)
     modern.onTickEnd()
     assertEquals(modern.history(Schema.Reasons, modern.history.nextSeq - 1).toInt & Reason.LegacyInput, 0)
+
+  test("the Attack reason marks attack input even without a matched target"):
+    assertEquals((Reason.MasksRot | Reason.MasksInp | Reason.MasksTgt) & Reason.Attack, 0)
+    val h = Harness()
+    h.tick(attack = 7) // no entity 7 spawned: the attack column stays 0, the input bit is set
+    val hist = h.sim.history
+    assertEquals(hist(Schema.Attack, hist.nextSeq - 1), 0f)
+    assertEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.Attack, Reason.Attack)
+    h.tick()
+    assertEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.Attack, 0)
+    h.spawnTarget(7, 2.5)
+    h.tick(attack = 7)
+    assertEquals(hist(Schema.Attack, hist.nextSeq - 1), 1f)
+    assertEquals(hist(Schema.Reasons, hist.nextSeq - 1).toInt & Reason.Attack, Reason.Attack)

@@ -40,6 +40,10 @@ object Reason:
     * deliberately outside the validity masks: training can filter on it to compare client
     * versions on equal terms. */
   inline val NoMoveTick = 1 << 14
+  /** An attack input happened this tick, whether or not a target was matched; the `attack`
+    * feature column stays target-gated, this bit marks the raw input. Last free bit of the
+    * U16: the next reason needs a wider column. */
+  inline val Attack = 1 << 15
 
   inline val MasksRot = Teleport | ServerRotation | Uncalibrated | Gui | Vehicle | Gliding | Riptide | Idle | Discontinuity
   inline val MasksInp = Teleport | Gui | Vehicle | Gliding | Riptide | Knockback | Idle | Water

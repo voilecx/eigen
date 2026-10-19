@@ -23,12 +23,14 @@ final case class SimConfig(
     combatTicks: Int = 60,
     /** Ticks around combat that are neither combat nor calm. */
     bufferTicks: Int = 60,
-    attackPre: Int = 56,
-    attackPost: Int = 24,
+    /** Ticks of context before / after the hit; the attack window is 128 ticks. */
+    attackPre: Int = 96,
+    attackPost: Int = 32,
     /** Minimum ticks between two attack anchors. */
     attackMinGap: Int = 20,
-    engagePre: Int = 24,
-    engagePost: Int = 56,
+    /** Ticks of context before / after the first tick of an engagement; 128 total. */
+    engagePre: Int = 32,
+    engagePost: Int = 96,
     calmMinTicks: Int = 100,
     calmMaxTicks: Int = 1200,
     /** Fraction of calm ticks that must carry real mouse movement for a segment to be kept. */

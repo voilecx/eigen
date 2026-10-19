@@ -44,11 +44,11 @@ detection:
     # Calm ticks closer than this to combat on either side are neither combat nor calm.
     buffer-ticks: 60
   windows:
-    attack-pre: 56
-    attack-post: 24
+    attack-pre: 96
+    attack-post: 32
     attack-min-gap: 20
-    engage-pre: 24
-    engage-post: 56
+    engage-pre: 32
+    engage-post: 96
   calm:
     min-ticks: 100
     max-ticks: 1200

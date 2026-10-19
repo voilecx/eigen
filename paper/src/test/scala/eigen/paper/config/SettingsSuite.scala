@@ -48,8 +48,8 @@ class SettingsSuite extends munit.FunSuite:
     assertEquals(fromBundled.map(_.garnet), fromEmpty.map(_.garnet))
     assertEquals(fromBundled.map(_.exemptBedrock), fromEmpty.map(_.exemptBedrock))
     assertEquals(fromBundled.map(_.alertThreshold), fromEmpty.map(_.alertThreshold))
-    assertEquals(fromBundled.map(_.sim.attackPre + fromBundled.toOption.get.sim.attackPost), Right(80))
-    assertEquals(fromBundled.map(_.sim.engagePre + fromBundled.toOption.get.sim.engagePost), Right(80))
+    assertEquals(fromBundled.map(_.sim.attackPre + fromBundled.toOption.get.sim.attackPost), Right(128))
+    assertEquals(fromBundled.map(_.sim.engagePre + fromBundled.toOption.get.sim.engagePost), Right(128))
 
   test("a remote plaintext endpoint is refused, naming the key"):
     val result = settingsFrom(Map("backend" -> Map("url" -> "ws://eigen.example.com/v1/stream")))
