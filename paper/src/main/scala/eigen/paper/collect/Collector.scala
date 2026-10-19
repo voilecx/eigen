@@ -63,7 +63,7 @@ final class Collector(settings: Settings, players: Players, stream: StreamClient
         uuid = UUID.randomUUID(),
         handle = p.handle,
         playerName = targetName,
-        player = players.pseudonym(p.uuid),
+        player = p.pseudonym,
         label = label,
         tags = tags,
         note = note,

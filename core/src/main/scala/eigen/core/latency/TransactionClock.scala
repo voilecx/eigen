@@ -25,6 +25,7 @@ package eigen.core.latency
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicIntegerArray
 
 /**
  * Orders server-side knowledge by what the client has actually received.
@@ -45,7 +46,12 @@ final class TransactionClock:
   private final class Task(val transaction: Int, val run: Runnable)
 
   private val counter = AtomicInteger(0)
-  private val pendingIds = java.util.concurrent.ConcurrentHashMap.newKeySet[java.lang.Short]()
+  // Id membership as bit sets: pending marks allocated-but-unsent ids, in-flight marks
+  // sent-but-unanswered ones. Two fixed 4 KiB tables replace the per-id `java.lang.Short`
+  // boxing and the per-pong stream scan this class used to pay. Ids wrap only after 32768
+  // outstanding transactions, which no live connection reaches.
+  private val pendingBits = AtomicIntegerArray(Bits)
+  private val inFlightBits = AtomicIntegerArray(Bits)
   private val inFlight = ConcurrentLinkedQueue[Stamp]()
 
   /** Transactions the client has been sent / has answered. Task ids compare against these. */
@@ -66,25 +72,28 @@ final class TransactionClock:
   def nextId(): Short =
     val raw = counter.getAndIncrement() & 0x7fff
     val id = (if raw == 0 then 0x7fff else raw).toShort
-    pendingIds.add(id)
+    setBit(pendingBits, id)
     id
 
   /** Called on the send path when a ping leaves; ignores pings that are not ours. */
   def onPingSent(id: Int): Unit =
-    if isOurs(id) && pendingIds.remove(id.toShort) then
-      inFlight.add(Stamp(id.toShort, System.nanoTime()))
-      sent.incrementAndGet()
+    if isOurs(id) then
+      val sid = id.toShort
+      if testAndClearBit(pendingBits, sid) then
+        setBit(inFlightBits, sid)
+        inFlight.add(Stamp(sid, System.nanoTime()))
+        sent.incrementAndGet()
 
   /**
    * Called on the receive path for every pong. Returns true when the pong was ours, so the
    * caller can cancel it; due tasks run immediately on the calling thread.
    */
   def onPong(id: Int): Boolean =
-    if !isOurs(id) || !inFlight.stream().anyMatch(_.id == id.toShort) then return false
+    if !isOurs(id) || !testBit(inFlightBits, id.toShort) then return false
     var stamp: Stamp | Null = null
     while
       stamp = inFlight.poll()
-      stamp != null && { received.incrementAndGet(); stamp.nn.id != id.toShort }
+      stamp != null && { received.incrementAndGet(); clearBit(inFlightBits, stamp.nn.id); stamp.nn.id != id.toShort }
     do ()
     val s = stamp
     if s != null then
@@ -114,5 +123,36 @@ final class TransactionClock:
 object TransactionClock:
   private inline val RttWeight = 0.125
 
+  /** One bit per positive short id: 32768 ids in 1024 ints. */
+  private inline val Bits = 1024
+
   /** Ours are positive shorts; GrimAC's are `<= 0`; anything wider than a short belongs to neither. */
   inline def isOurs(id: Int): Boolean = id > 0 && id == id.toShort
+
+  // Bit twiddles as CAS loops: contention is one writer per id, so they run uncontended
+  // and allocate nothing.
+  private def setBit(bits: AtomicIntegerArray, id: Short): Unit =
+    val b = id.toInt & 0x7fff
+    val w = b >>> 5
+    val m = 1 << (b & 31)
+    var prev = bits.get(w)
+    while (prev & m) == 0 && !bits.compareAndSet(w, prev, prev | m) do prev = bits.get(w)
+
+  private def clearBit(bits: AtomicIntegerArray, id: Short): Unit =
+    val b = id.toInt & 0x7fff
+    val w = b >>> 5
+    val m = 1 << (b & 31)
+    var prev = bits.get(w)
+    while (prev & m) != 0 && !bits.compareAndSet(w, prev, prev & ~m) do prev = bits.get(w)
+
+  private def testBit(bits: AtomicIntegerArray, id: Short): Boolean =
+    val b = id.toInt & 0x7fff
+    (bits.get(b >>> 5) & (1 << (b & 31))) != 0
+
+  private def testAndClearBit(bits: AtomicIntegerArray, id: Short): Boolean =
+    val b = id.toInt & 0x7fff
+    val w = b >>> 5
+    val m = 1 << (b & 31)
+    var prev = bits.get(w)
+    while (prev & m) != 0 && !bits.compareAndSet(w, prev, prev & ~m) do prev = bits.get(w)
+    (prev & m) != 0

@@ -27,6 +27,7 @@ import scala.jdk.CollectionConverters.*
 import com.github.retrooper.packetevents.PacketEvents
 import com.github.retrooper.packetevents.event.{PacketListenerAbstract, PacketListenerPriority, PacketSendEvent}
 import com.github.retrooper.packetevents.manager.server.ServerVersion
+import com.github.retrooper.packetevents.protocol.entity.data.EntityData
 import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
 import com.github.retrooper.packetevents.protocol.entity.`type`.{EntityType, EntityTypes}
 import com.github.retrooper.packetevents.protocol.item.ItemStack
@@ -48,6 +49,9 @@ import eigen.core.sim.{ItemKind, PendingRotation, PendingTeleport}
 final class Outbound(players: Players) extends PacketListenerAbstract(PacketListenerPriority.MONITOR):
   import Outbound.*
   import PacketType.Play.Server as S
+
+  // Fixed per process; metadata indices follow the server version.
+  private val livingIdx = livingFlagsIndex(PacketEvents.getAPI.getServerManager.getVersion)
 
   override def onPacketSend(event: PacketSendEvent): Unit =
     if event.isCancelled then return
@@ -191,42 +195,90 @@ final class Outbound(players: Players) extends PacketListenerAbstract(PacketList
   private def metadata(p: EigenPlayer, w: WrapperPlayServerEntityMetadata): Unit =
     val id = w.getEntityId
     val self = id == p.sim.selfId
-    val data = w.getEntityMetadata.asScala.toSeq
-    // Metadata is encoded by the server, so its indices follow the server version.
-    val livingIndex = livingFlagsIndex(PacketEvents.getAPI.getServerManager.getVersion)
+    val entries = w.getEntityMetadata
+    val n = entries.size
+    // Almost every metadata packet carries nothing the simulation tracks; filtering before
+    // scheduling keeps those packets free of collection conversion, task and closure.
+    var i = 0
+    var relevant = false
+    while !relevant && i < n do
+      relevant = isRelevantMeta(self, entries.get(i))
+      i += 1
+    if !relevant then return
+    val kept = new java.util.ArrayList[EntityData[?]](2)
+    i = 0
+    while i < n do
+      val d = entries.get(i)
+      if isRelevantMeta(self, d) then kept.add(d)
+      i += 1
     p.clock.at(p.clock.lastSent): () =>
-      data.foreach: d =>
-        (d.getIndex, d.getValue) match
-          case (0, flags: java.lang.Byte) if self =>
-            p.sim.onSelfFlags(gliding = (flags & 0x80) != 0, swimming = (flags & 0x10) != 0)
-          case (i, flags: java.lang.Byte) if self && i == livingIndex =>
-            p.sim.onSelfLivingFlags(riptide = (flags & 0x04) != 0)
-          case (_, pose: EntityPose) if !self =>
-            val meta = p.entityMeta.getOrNull(id)
-            val e = p.sim.entity(id)
-            if meta != null && e != null then
-              meta.crouching = pose == EntityPose.CROUCHING
-              meta.lowPose = pose == EntityPose.SWIMMING || pose == EntityPose.FALL_FLYING || pose == EntityPose.SPIN_ATTACK
-              EntityCatalog.resize(e, meta.tpe, p.profile, meta.crouching, meta.lowPose, meta.scale)
-          case _ => ()
+      var j = 0
+      while j < kept.size do
+        applyMeta(p, id, self, kept.get(j))
+        j += 1
+
+  private def isRelevantMeta(self: Boolean, d: EntityData[?]): Boolean =
+    val v = d.getValue
+    if v.isInstanceOf[java.lang.Byte] then self && (d.getIndex == 0 || d.getIndex == livingIdx)
+    else v.isInstanceOf[EntityPose] && !self
+
+  private def applyMeta(p: EigenPlayer, id: Int, self: Boolean, d: EntityData[?]): Unit =
+    (d.getIndex, d.getValue) match
+      case (0, flags: java.lang.Byte) if self =>
+        p.sim.onSelfFlags(gliding = (flags & 0x80) != 0, swimming = (flags & 0x10) != 0)
+      case (i, flags: java.lang.Byte) if self && i == livingIdx =>
+        p.sim.onSelfLivingFlags(riptide = (flags & 0x04) != 0)
+      case (_, pose: EntityPose) if !self =>
+        val meta = p.entityMeta.getOrNull(id)
+        val e = p.sim.entity(id)
+        if meta != null && e != null then
+          meta.crouching = pose == EntityPose.CROUCHING
+          meta.lowPose = pose == EntityPose.SWIMMING || pose == EntityPose.FALL_FLYING || pose == EntityPose.SPIN_ATTACK
+          EntityCatalog.resize(e, meta.tpe, p.profile, meta.crouching, meta.lowPose, meta.scale)
+      case _ => ()
 
   private def attributes(p: EigenPlayer, event: PacketSendEvent, w: WrapperPlayServerUpdateAttributes): Unit =
     val id = w.getEntityId
     val self = id == p.sim.selfId
-    val values = w.getProperties.asScala.toSeq.map(prop => prop.getAttribute.getName.getKey.toLowerCase -> prop.calcValue())
+    val props = w.getProperties
+    val n = props.size
+    // Most attribute packets (armour, luck, ...) touch nothing tracked here; skipping them
+    // also skips the bracket transactions a self packet would otherwise cost.
+    var i = 0
+    var relevant = false
+    while !relevant && i < n do
+      relevant = isRelevantAttribute(self, props.get(i).getAttribute.getName.getKey)
+      i += 1
+    if !relevant then return
+    val values = new java.util.ArrayList[(String, Double)](2)
+    i = 0
+    while i < n do
+      val prop = props.get(i)
+      val key = prop.getAttribute.getName.getKey
+      if isRelevantAttribute(self, key) then values.add((key, prop.calcValue()))
+      i += 1
     val t = if self then p.bracket(event) else p.clock.lastSent
     p.clock.at(t): () =>
-      values.foreach: (key, value) =>
-        if key.endsWith("scale") then
-          if self then p.sim.onSelfScale(value.toFloat)
-          else
-            val meta = p.entityMeta.getOrNull(id)
-            val e = p.sim.entity(id)
-            if meta != null && e != null then
-              meta.scale = value.toFloat
-              EntityCatalog.resize(e, meta.tpe, p.profile, meta.crouching, meta.lowPose, meta.scale)
-        else if self && key.endsWith("attack_speed") then p.sim.onAttackSpeed(value)
-        else if self && key.endsWith("entity_interaction_range") then p.sim.onInteractionRange(value)
+      var j = 0
+      while j < values.size do
+        val (key, value) = values.get(j)
+        applyAttribute(p, id, self, key, value)
+        j += 1
+
+  private def isRelevantAttribute(self: Boolean, key: String): Boolean =
+    key.endsWith("scale") || (self && (key.endsWith("attack_speed") || key.endsWith("entity_interaction_range")))
+
+  private def applyAttribute(p: EigenPlayer, id: Int, self: Boolean, key: String, value: Double): Unit =
+    if key.endsWith("scale") then
+      if self then p.sim.onSelfScale(value.toFloat)
+      else
+        val meta = p.entityMeta.getOrNull(id)
+        val e = p.sim.entity(id)
+        if meta != null && e != null then
+          meta.scale = value.toFloat
+          EntityCatalog.resize(e, meta.tpe, p.profile, meta.crouching, meta.lowPose, meta.scale)
+    else if self && key.endsWith("attack_speed") then p.sim.onAttackSpeed(value)
+    else if self && key.endsWith("entity_interaction_range") then p.sim.onInteractionRange(value)
 
   private def vehicleChange(p: EigenPlayer, vehicle: Int, riding: Boolean): Unit =
     if riding then p.sim.onVehicle(true)

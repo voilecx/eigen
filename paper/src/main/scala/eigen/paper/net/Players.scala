@@ -44,6 +44,7 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink, 
   private val byHandle = ConcurrentHashMap[Int, EigenPlayer]()
   private val pendingBrands = ConcurrentHashMap[User, String]()
   private val handles = AtomicInteger(0)
+  private val macSpec = SecretKeySpec(settings.salt, "HmacSHA256")
 
   @volatile var onAnnounced: EigenPlayer => Unit = _ => ()
 
@@ -60,7 +61,7 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink, 
     p
 
   private def newPlayer(user: User): EigenPlayer =
-    val p = EigenPlayer(user, user.getUUID, handles.incrementAndGet(), Profiles.of(user.getClientVersion), settings.sim, route)
+    val p = EigenPlayer(user, user.getUUID, handles.incrementAndGet(), Profiles.of(user.getClientVersion), pseudonymOf(user.getUUID), settings.sim, route)
     val brand = pendingBrands.remove(user)
     if brand != null then p.brand = brand
     p.exempt = settings.exemptBedrock && isBedrock(user.getUUID)
@@ -72,7 +73,7 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink, 
   def announce(p: EigenPlayer, name: String): Unit =
     p.name = name
     if !p.announced then
-      val pseudo = pseudonym(p.uuid)
+      val pseudo = p.pseudonym
       stream.playerJoined(Messages.PlayerJoin(p.handle, pseudo, p.profile.protocol, p.brand))
       p.announced = true
       if !p.exempt && garnet.enabled then
@@ -84,11 +85,14 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink, 
     pendingBrands.remove(user)
     val p = byUser.remove(user)
     if p != null then
+      // No further packets arrive, so the mailbox is drained here: every task a command
+      // posted (a session start or stop) still runs on the connection's own thread.
+      p.drain()
       if !p.exempt then
         if wantsWindows(p) && p.sim.calm.length >= settings.sim.calmMinTicks then
           WindowSystem.flushCalm(p.sim)
         if garnet.enabled then
-          garnet.saveHandoff(pseudonym(p.uuid), Handoff.encode(p.sim))
+          garnet.saveHandoff(p.pseudonym, Handoff.encode(p.sim))
       byUuid.remove(p.uuid, p)
       byHandle.remove(p.handle, p)
       if p.announced then stream.playerLeft(p.handle)
@@ -120,9 +124,9 @@ final class Players(settings: Settings, stream: StreamClient, local: LocalSink, 
       stream.window(w)
 
   /** Stable pseudonymous id: HMAC-SHA256 of the UUID under this server's secret salt. */
-  def pseudonym(uuid: UUID): String =
+  private def pseudonymOf(uuid: UUID): String =
     val mac = Mac.getInstance("HmacSHA256")
-    mac.init(SecretKeySpec(settings.salt, "HmacSHA256"))
+    mac.init(macSpec)
     val bytes = ByteBuffer.allocate(16).putLong(uuid.getMostSignificantBits).putLong(uuid.getLeastSignificantBits).array()
     HexFormat.of().formatHex(mac.doFinal(bytes))
 

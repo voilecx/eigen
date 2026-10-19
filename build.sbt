@@ -75,7 +75,17 @@ lazy val paper = (project in file("paper"))
       "io.papermc.paper" % "paper-api" % paperApiVersion % Provided,
       // Supplied at runtime by the PacketEvents plugin (see `depend` in plugin.yml).
       "com.github.retrooper" % "packetevents-spigot" % packetEventsVersion % Provided,
-      "io.lettuce" % "lettuce-core" % lettuceVersion,
+      // Lettuce's netty modules are all bundled by Paper itself (the plugin classloader
+      // resolves io.netty from the server first), so they stay out of the fat jar.
+      ("io.lettuce" % "lettuce-core" % lettuceVersion).excludeAll(
+        ExclusionRule(organization = "io.netty", name = "netty-buffer"),
+        ExclusionRule(organization = "io.netty", name = "netty-codec"),
+        ExclusionRule(organization = "io.netty", name = "netty-common"),
+        ExclusionRule(organization = "io.netty", name = "netty-handler"),
+        ExclusionRule(organization = "io.netty", name = "netty-resolver"),
+        ExclusionRule(organization = "io.netty", name = "netty-transport"),
+        ExclusionRule(organization = "io.netty", name = "netty-transport-native-unix-common"),
+      ),
       // Compile-time only: autowire expands to plain constructor calls.
       "com.softwaremill.macwire" %% "macros" % macwireVersion % Provided,
       "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % jsoniterVersion % Provided,

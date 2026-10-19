@@ -54,6 +54,7 @@ final class EigenPlayer(
     val uuid: UUID,
     val handle: Int,
     val profile: ClientProfile,
+    val pseudonym: String,
     config: SimConfig,
     windows: (EigenPlayer, Window) => Unit,
 ):
