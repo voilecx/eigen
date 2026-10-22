@@ -19,6 +19,8 @@ package eigen.core.sim
 final case class SimConfig(
     /** Also treat non-player living entities as combat targets. */
     targetLiving: Boolean = false,
+    /** Treat player-shaped NPCs (mannequins) as combat targets; independent of [[targetLiving]]. */
+    targetNpcs: Boolean = true,
     /** Ticks after the last hit that still count as combat. Combat starts only with a hit. */
     combatTicks: Int = 60,
     /** Ticks around combat that are neither combat nor calm. */

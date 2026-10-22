@@ -86,10 +86,33 @@ object EntityCatalog:
   private val Fallback = Dims(0.6f, 1.95f)
   private val Boat = Dims(1.375f, 0.5625f)
 
+  private val Avatar = Dims(0.6f, 1.8f)
+
   private def name(t: EntityType): String = t.getName.getKey
 
+  /**
+   * Player-shaped: the player and every type the protocol derives from the same `avatar` base
+   * (mannequins). Types are matched by name rather than through `EntityTypes.AVATAR` or
+   * `MANNEQUIN`, so this links and works with PacketEvents builds that predate them, as found on
+   * servers older than 26.x; there the player is the only avatar.
+   */
+  private[net] def avatar(t: EntityType): Boolean = player(t) || descendsFrom(t, AvatarBase)
+
+  private def player(t: EntityType): Boolean = name(t) == "player"
+
+  private[net] def descendsFrom(t: EntityType, base: String): Boolean =
+    var p = t.getParent.orElse(null)
+    var found = false
+    while p != null && !found do
+      found = name(p) == base
+      p = p.getParent.orElse(null)
+    found
+
+  private inline val AvatarBase = "avatar"
+
   def kind(t: EntityType): EntityKind =
-    if t == EntityTypes.PLAYER then EntityKind.Player
+    if player(t) then EntityKind.Player
+    else if avatar(t) then EntityKind.Npc
     else if t == EntityTypes.END_CRYSTAL then EntityKind.Crystal
     else if EntityTypes.isTypeInstanceOf(t, EntityTypes.LIVINGENTITY) then EntityKind.Living
     else EntityKind.Other
@@ -109,10 +132,11 @@ object EntityCatalog:
    */
   def resize(e: TrackedEntity, t: EntityType, profile: ClientProfile, crouching: Boolean, lowPose: Boolean, scale: Float): Unit =
     val base =
-      if EntityTypes.isTypeInstanceOf(t, EntityTypes.BOAT) then Boat
+      if avatar(t) then Avatar
+      else if EntityTypes.isTypeInstanceOf(t, EntityTypes.BOAT) then Boat
       else dims.getOrElse(name(t), Fallback)
     val height =
-      if t != EntityTypes.PLAYER then base.height
+      if !avatar(t) then base.height
       else if lowPose then 0.6f
       else if crouching then profile.crouchHeight
       else base.height

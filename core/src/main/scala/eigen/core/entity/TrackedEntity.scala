@@ -30,6 +30,8 @@ enum EntityKind(val code: Int):
   case Living extends EntityKind(2)
   case Crystal extends EntityKind(3)
   case Other extends EntityKind(4)
+  /** Player-shaped but not a player: a mannequin or another avatar NPC. */
+  case Npc extends EntityKind(5)
 
 /**
  * An entity as one particular client sees it: the server's latest position plus the window of

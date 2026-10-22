@@ -73,6 +73,11 @@ class SettingsSuite extends munit.FunSuite:
     val living = settingsFrom(Map("detection" -> Map("targets" -> "living")))
     assertEquals(living.map(_.sim.targetLiving), Right(true))
 
+  test("NPC targets are on by default and switch off on their own"):
+    assertEquals(settingsFrom(Map.empty).map(_.sim.targetNpcs), Right(true))
+    val off = settingsFrom(Map("detection" -> Map("target-npcs" -> false)))
+    assertEquals(off.map(s => (s.sim.targetNpcs, s.sim.targetLiving)), Right((false, false)))
+
   test("a salt that is too short is rejected with a hint"):
     val result = Settings.schema.from(Source.of(Map("privacy" -> Map("salt" -> "abc"))))
     assertEquals(result.left.toOption, Some("privacy.salt: must be at least 64 hex digits; delete it to generate a new one"))

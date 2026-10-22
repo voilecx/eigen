@@ -100,6 +100,7 @@ object Settings:
   private val detectionSchema: Read[Detection] =
     for
       living <- Read.choice("targets", "players")("players" -> false, "living" -> true)
+      npcs <- Read.bool("target-npcs", defaults.targetNpcs)
       gate <- Read.section("gate"):
         for
           combat <- Read.int("combat-ticks", defaults.combatTicks, min = 1)
@@ -128,6 +129,7 @@ object Settings:
       Detection(
         SimConfig(
           targetLiving = living,
+          targetNpcs = npcs,
           combatTicks = combat,
           bufferTicks = buffer,
           attackPre = attackPre,

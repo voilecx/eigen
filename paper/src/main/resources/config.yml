@@ -38,6 +38,9 @@ garnet:
 detection:
   # Targets that open combat: players, or living (players and mobs).
   targets: players
+  # Player-shaped NPCs (mannequins, e.g. sparring bots) open combat like players. Independent of
+  # targets; set false to ignore hits on them.
+  target-npcs: true
   gate:
     # Combat starts with a hit and lasts this many ticks after the last one.
     combat-ticks: 60

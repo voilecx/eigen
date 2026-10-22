@@ -45,8 +45,8 @@ class SimSuite extends munit.FunSuite:
       if swing || attack >= 0 then sim.onSwing()
       sim.onTickEnd()
 
-    def spawnTarget(id: Int, z: Double): TrackedEntity =
-      val e = TrackedEntity(id, EntityKind.Player, TrackedEntity.LivingSteps, ClientProfile.Modern)
+    def spawnTarget(id: Int, z: Double, kind: EntityKind = EntityKind.Player): TrackedEntity =
+      val e = TrackedEntity(id, kind, TrackedEntity.LivingSteps, ClientProfile.Modern)
       e.spawnAt(0, 64, z)
       sim.addEntity(e)
       e
@@ -89,6 +89,20 @@ class SimSuite extends munit.FunSuite:
     assertEquals(engage.size, 1)
     assertEquals(engage.head.engagement, 1)
     assertEquals(w.engagement, 1)
+
+  test("hits on an NPC open combat unless NPC targets are switched off"):
+    def attacks(cfg: SimConfig): Int =
+      val h = Harness(cfg)
+      for _ <- 0 until 150 do h.tick()
+      h.spawnTarget(2, 2.5, EntityKind.Npc)
+      for _ <- 0 until 30 do h.tick()
+      h.tick(attack = 2)
+      for _ <- 0 until cfg.engagePost do h.tick()
+      h.windows.count(_.kind == WindowKind.Attack)
+    val base = SimConfig(calmMinTicks = 40, calmMaxTicks = 200)
+    assertEquals(attacks(base), 1)
+    assertEquals(attacks(base.copy(targetNpcs = false)), 0)
+    assertEquals(attacks(base.copy(targetNpcs = false, targetLiving = true)), 0)
 
   test("calm after a fight carries the engagement that preceded it"):
     val h = Harness()

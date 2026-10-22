@@ -239,7 +239,9 @@ final class PlayerSim(val profile: ClientProfile, val config: SimConfig, emit: W
 
   /** Whether entities of this kind count as melee targets under the current configuration. */
   private[sim] def targetable(kind: EntityKind): Boolean =
-    kind == EntityKind.Player || (config.targetLiving && kind == EntityKind.Living)
+    kind == EntityKind.Player ||
+      (config.targetNpcs && kind == EntityKind.Npc) ||
+      (config.targetLiving && kind == EntityKind.Living)
 
 object PlayerSim:
   private inline val MaxPending = 8
